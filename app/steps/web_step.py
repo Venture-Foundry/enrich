@@ -107,7 +107,8 @@ LINK_CATS = [
 PARTNER_CATS = [
     ("services", re.compile(r"service|what-we-do|capabilit|offering|expertise|managed|consult|خدمات", re.I)),
     ("solutions", re.compile(r"solution|platform|technolog|practice|accelerator|حلول", re.I)),
-    ("partners", re.compile(r"partner|alliance|vendor|ecosystem|microsoft|\baws\b|azure|google-cloud|salesforce|\bsap\b|oracle|cisco|\bdell\b|\bhp\b", re.I)),
+    ("partners", re.compile(r"partner|alliance|vendor|ecosystem|\baws\b|google-cloud|salesforce|\bsap\b|oracle|cisco|\bdell\b|\bhp\b", re.I)),
+    ("microsoft", re.compile(r"microsoft|azure|dynamics|power-?platform|m365|office-?365|copilot|\bcsp\b", re.I)),
     ("industries", re.compile(r"industr|sector|verticals?|who-we-serve|we-serve|قطاعات", re.I)),
     ("clients", re.compile(r"client|customer|case-stud|success|portfolio|reference|projects?|testimonial|عملاء", re.I)),
     ("certifications", re.compile(r"certif|award|accredit|compliance|iso-?27|iso-?9", re.I)),
@@ -121,16 +122,20 @@ CUSTOMER_CATS = [
 ALL_CATS = LINK_CATS + PARTNER_CATS + CUSTOMER_CATS
 FOCUS_CATS = {"partner": PARTNER_CATS, "customer": CUSTOMER_CATS, "both": PARTNER_CATS + CUSTOMER_CATS}
 MAX_EXTRA_PAGES = 4        # default (no focus) cap
-MAX_EXTRA_PAGES_FOCUS = 8  # cap when a partner/customer focus is selected
+MAX_EXTRA_PAGES_FOCUS = 8  # cap when a customer/both focus is selected
+MAX_EXTRA_PAGES_PARTNER = 12  # partner capability needs more pages (services, vendors, case studies)
+MIN_EXTRA_PAGES_PARTNER = 10  # floor, so the form's page setting cannot starve a partner profile
+PER_CAT_PARTNER = 2           # up to two pages per category for partners (several service or solution pages)
 
 def _same_site(host_a, host_b):
     strip = lambda h: (h or "").lower().removeprefix("www.")
     return strip(host_a) == strip(host_b)
 
-def pick_pages(home_url, links, extra, focus=""):
+def pick_pages(home_url, links, extra, focus="", more=None):
     """Choose up to `extra` internal pages and report the careers link.
     Without a focus: contact, about, careers, team. With focus partner/customer/both the focus categories come first
-    (services, partners, industries, clients... / products, locations, news...) followed by the basics."""
+    (services, partners, industries, clients... / products, locations, news...) followed by the basics.
+    Partner focus reads up to PER_CAT_PARTNER pages per category. `more` = extra candidate URLs (e.g. from the sitemap)."""
     base_host = urlparse(home_url).hostname
     cands = []
     internal = (links or {}).get("internal") or []
@@ -144,17 +149,67 @@ def pick_pages(home_url, links, extra, focus=""):
         if not _same_site(urlparse(absu).hostname, base_host):
             continue
         cands.append((absu.split("#")[0], f"{urlparse(absu).path} {text}"))
+    seen = {u for u, _ in cands}
+    for href in more or []:
+        absu = urljoin(home_url, href).split("#")[0]
+        if absu not in seen and _same_site(urlparse(absu).hostname, base_host):
+            seen.add(absu)
+            cands.append((absu, urlparse(absu).path))
     cats = FOCUS_CATS.get(focus, []) + LINK_CATS
+    per_cat = PER_CAT_PARTNER if focus == "partner" else 1
     chosen, careers_url = [], ""
     for name, rx in cats:
+        took = 0
         for u, label in cands:
-            if rx.search(label) and u.rstrip("/") != home_url.rstrip("/"):
-                if name == "careers" and not careers_url:
-                    careers_url = u
-                if u not in [c[1] for c in chosen] and len(chosen) < extra:
-                    chosen.append((name, u))
+            if not rx.search(label) or u.rstrip("/") == home_url.rstrip("/"):
+                continue
+            if name == "careers" and not careers_url:
+                careers_url = u
+            if u in [c[1] for c in chosen]:
+                continue
+            if len(chosen) >= extra:
+                break
+            chosen.append((name, u))
+            took += 1
+            if took >= per_cat or name in ("contact", "careers", "team", "about"):
                 break
     return [u for _, u in chosen], careers_url
+
+_LOC_RX = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>", re.I)
+_SKIP_URL = re.compile(r"\.(pdf|jpe?g|png|gif|webp|svg|zip|xml)(\?|$)|/(tag|category|author|wp-json|feed)/|/(ar|fr|de|ru)/", re.I)
+
+def parse_sitemap(xml, limit=400):
+    """Return (page_urls, child_sitemaps) from a sitemap or sitemap index body."""
+    locs = _LOC_RX.findall(xml or "")
+    kids = [u for u in locs if u.lower().split("?")[0].endswith(".xml")]
+    pages = [u for u in locs if u not in kids and not _SKIP_URL.search(u)]
+    return pages[:limit], kids
+
+async def sitemap_urls(final_url, client=None, limit=400):
+    """Best-effort sitemap read for sites whose menus are JavaScript only. Never raises."""
+    origin = f"{urlparse(final_url).scheme}://{urlparse(final_url).netloc}"
+    own = client is None
+    client = client or httpx.AsyncClient(timeout=8, follow_redirects=True)
+    try:
+        r = await client.get(origin + "/sitemap.xml", timeout=8, follow_redirects=True)
+        if r.status_code >= 400:
+            return []
+        pages, kids = parse_sitemap(r.text, limit)
+        for k in kids[:3]:
+            if len(pages) >= limit:
+                break
+            try:
+                rk = await client.get(k, timeout=8, follow_redirects=True)
+                if rk.status_code < 400:
+                    pages += parse_sitemap(rk.text, limit)[0]
+            except Exception:
+                continue
+        return pages[:limit]
+    except Exception:
+        return []
+    finally:
+        if own:
+            await client.aclose()
 
 EMAIL_RX = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
 JUNK_EMAIL = re.compile(r"\.(png|jpe?g|gif|svg|webp|css|js|woff2?)$|sentry|example\.|yourdomain|wixpress|domain\.com|email\.com|@2x", re.I)
@@ -269,7 +324,7 @@ def extract(domain, pages, careers_url="", packs=None, deep=False):
     out["enr_industry_guess"], out["enr_industry_runner_up"], out["enr_industry_confidence"] = top, ru, conf
     out["enr_pages_crawled"] = len(pages)
     out["enr_text_chars"] = len(full_text)
-    return out, full_text.lower()[:60000], "\n\n".join(md_parts)[:(settings.LLM_MAX_CHARS if deep else 14000)]
+    return out, full_text.lower()[:60000], "\n\n".join(md_parts)[:(max(settings.LLM_MAX_CHARS, 60000) if deep else 14000)]
 
 async def run(domain: str, extra_pages: int = 3, client=None, focus: str = "") -> dict:
     home = None
@@ -288,8 +343,14 @@ async def run(domain: str, extra_pages: int = 3, client=None, focus: str = "") -
         return out
     final = home["final_url"] or home["url"]
     pages = [{**home, "name": "home"}]
-    cap = MAX_EXTRA_PAGES_FOCUS if focus in FOCUS_CATS else MAX_EXTRA_PAGES
-    urls, careers_url = pick_pages(final, home["links"], max(0, min(extra_pages, cap)), focus)
+    if focus == "partner":
+        want, more = min(MAX_EXTRA_PAGES_PARTNER, max(extra_pages, MIN_EXTRA_PAGES_PARTNER)), None
+        n_links = len((home["links"] or {}).get("internal") or [])
+        if n_links < 25:  # thin or script-built menu: look at the sitemap as well
+            more = await sitemap_urls(final)
+    else:
+        want, more = max(0, min(extra_pages, MAX_EXTRA_PAGES_FOCUS if focus in FOCUS_CATS else MAX_EXTRA_PAGES)), None
+    urls, careers_url = pick_pages(final, home["links"], want, focus, more)
     if urls:
         extra = await crawl(urls, client)
         for u, r in zip(urls, extra):
