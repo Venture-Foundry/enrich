@@ -57,7 +57,7 @@ os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 m2 = L._map("partner", {"secondary_types": ["Other", "Not a technology partner", "Cloud, hosting & data centre", "Cybersecurity & MSSP"]})
 check("secondary types drop Other / Not a partner", m2["enr_p_secondary_types"] == ["Cloud, hosting & data centre", "Cybersecurity & MSSP"], m2["enr_p_secondary_types"])
 check("capability prompt bans guessing", "never write \"implied\"" in L.PROMPTS["partner"])
-check("version bumped again", L.TAXONOMY_VERSION == "t7")
+check("version bumped again", L.TAXONOMY_VERSION == "t8")
 
 def timeout_handler(request): raise httpx.ReadTimeout("slow site", request=request)
 async def t_crawl():
@@ -133,6 +133,9 @@ try:
 finally:
     W.crawl = real_crawl
 check("error pages are not re-crawled", True not in calls, calls)
+
+check("person without a title is dropped, not 'Name ()'", L._people([{"name": "N S", "title": ""}, {"name": "A B", "title": "CEO"}]) == ["A B (CEO)"])
+check("question-mark guess removed", L._unhedge("On-site and off-site records management, cloud-hosted?") == "On-site and off-site records management", L._unhedge("On-site and off-site records management, cloud-hosted?"))
 
 print("FAILED" if FAIL else "ALL PASSED", FAIL)
 sys.exit(1 if FAIL else 0)
