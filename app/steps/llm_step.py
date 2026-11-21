@@ -186,7 +186,8 @@ async def _call(prompt: str, usage: dict, profile: str, model: str = None) -> st
             u = j.get("usage") or {}
             usage["in"] = usage.get("in", 0) + int(u.get("prompt_tokens") or 0)
             usage["out"] = usage.get("out", 0) + int(u.get("completion_tokens") or 0)
-            return j["choices"][0]["message"]["content"]
+            ch = j["choices"][0]
+            return (ch.get("message") or {}).get("content") or ""  # reasoning models can return null content when thinking used the whole budget
         except httpx.HTTPStatusError as e:
             raise RuntimeError(f"LLM call failed: HTTP {e.response.status_code} {e.response.text[:160]}".strip())
         except (httpx.HTTPError, KeyError, ValueError, TypeError) as e:
@@ -204,6 +205,9 @@ async def run(domain: str, markdown: str, profile: str = "summary", usage: dict 
     prompt = PROMPTS[profile] % {"rules": RULES, "domain": domain, "text": markdown[:limit], "taxonomy": "; ".join(TAXONOMY),
                                  "isv_keys": isvs_mod.prompt_block(isvs) if isvs else ""}
     text = await _call(prompt, usage if usage is not None else {}, profile, model)
+    if not (text or "").strip():
+        raise RuntimeError("LLM returned an empty reply: a reasoning model probably used all its reply tokens thinking. "
+                           'Turn reasoning off in Extra request JSON (e.g. {"reasoning":{"enabled":false}}) or raise Max reply tokens')
     m = re.search(r"\{.*\}", text, re.S)
     try:
         j = json.loads(m.group(0)) if m else {}
