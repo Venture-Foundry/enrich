@@ -103,12 +103,34 @@ LINK_CATS = [
     ("team", re.compile(r"leadership|management|our-team|board|people|meet-the", re.I)),
 ]
 
+# Extra pages worth reading when profiling a company in depth (focus = partner / customer / both).
+PARTNER_CATS = [
+    ("services", re.compile(r"service|what-we-do|capabilit|offering|expertise|managed|consult|خدمات", re.I)),
+    ("solutions", re.compile(r"solution|platform|technolog|practice|accelerator|حلول", re.I)),
+    ("partners", re.compile(r"partner|alliance|vendor|ecosystem|microsoft|\baws\b|azure|google-cloud|salesforce|\bsap\b|oracle|cisco|\bdell\b|\bhp\b", re.I)),
+    ("industries", re.compile(r"industr|sector|verticals?|who-we-serve|we-serve|قطاعات", re.I)),
+    ("clients", re.compile(r"client|customer|case-stud|success|portfolio|reference|projects?|testimonial|عملاء", re.I)),
+    ("certifications", re.compile(r"certif|award|accredit|compliance|iso-?27|iso-?9", re.I)),
+]
+CUSTOMER_CATS = [
+    ("products", re.compile(r"product|service|what-we-do|brands?|menu|catalog|shop|offering|منتجات|خدمات", re.I)),
+    ("locations", re.compile(r"location|branches|stores?|find-us|outlets|network|offices|presence|فروع", re.I)),
+    ("news", re.compile(r"news|press|media|updates|announcement|blog|investor|csr|sustainab|أخبار", re.I)),
+    ("scale", re.compile(r"our-story|history|milestone|facts|at-a-glance|vision|strategy|group|subsidiar", re.I)),
+]
+ALL_CATS = LINK_CATS + PARTNER_CATS + CUSTOMER_CATS
+FOCUS_CATS = {"partner": PARTNER_CATS, "customer": CUSTOMER_CATS, "both": PARTNER_CATS + CUSTOMER_CATS}
+MAX_EXTRA_PAGES = 4        # default (no focus) cap
+MAX_EXTRA_PAGES_FOCUS = 8  # cap when a partner/customer focus is selected
+
 def _same_site(host_a, host_b):
     strip = lambda h: (h or "").lower().removeprefix("www.")
     return strip(host_a) == strip(host_b)
 
-def pick_pages(home_url, links, extra):
-    """Choose up to `extra` internal pages (contact, about, careers, team) and report the careers link."""
+def pick_pages(home_url, links, extra, focus=""):
+    """Choose up to `extra` internal pages and report the careers link.
+    Without a focus: contact, about, careers, team. With focus partner/customer/both the focus categories come first
+    (services, partners, industries, clients... / products, locations, news...) followed by the basics."""
     base_host = urlparse(home_url).hostname
     cands = []
     internal = (links or {}).get("internal") or []
@@ -122,8 +144,9 @@ def pick_pages(home_url, links, extra):
         if not _same_site(urlparse(absu).hostname, base_host):
             continue
         cands.append((absu.split("#")[0], f"{urlparse(absu).path} {text}"))
+    cats = FOCUS_CATS.get(focus, []) + LINK_CATS
     chosen, careers_url = [], ""
-    for name, rx in LINK_CATS:
+    for name, rx in cats:
         for u, label in cands:
             if rx.search(label) and u.rstrip("/") != home_url.rstrip("/"):
                 if name == "careers" and not careers_url:
@@ -154,7 +177,7 @@ def _clean_phone(p):
         p = "+" + p[2:]
     return p
 
-def extract(domain, pages, careers_url="", packs=None):
+def extract(domain, pages, careers_url="", packs=None, deep=False):
     """pages: list of dicts(name,url,html,markdown,links). Returns (columns dict, text_lower, markdown_excerpt)."""
     out = {c: "" for c in COLUMNS}
     home = pages[0]
@@ -169,7 +192,7 @@ def extract(domain, pages, careers_url="", packs=None):
         for t in s2(["script", "style", "noscript", "svg"]):
             t.decompose()
         texts.append(re.sub(r"\s+", " ", s2.get_text(" ", strip=True)))
-        limit = 6000 if i == 0 else 3500
+        limit = (9000 if i == 0 else 6000) if deep else (6000 if i == 0 else 3500)
         if p["markdown"]:
             md_parts.append(f"## {p.get('name','page')} ({p['url']})\n" + p["markdown"][:limit])
     hs = soups[0]
@@ -246,9 +269,9 @@ def extract(domain, pages, careers_url="", packs=None):
     out["enr_industry_guess"], out["enr_industry_runner_up"], out["enr_industry_confidence"] = top, ru, conf
     out["enr_pages_crawled"] = len(pages)
     out["enr_text_chars"] = len(full_text)
-    return out, full_text.lower()[:60000], "\n\n".join(md_parts)[:14000]
+    return out, full_text.lower()[:60000], "\n\n".join(md_parts)[:(settings.LLM_MAX_CHARS if deep else 14000)]
 
-async def run(domain: str, extra_pages: int = 3, client=None) -> dict:
+async def run(domain: str, extra_pages: int = 3, client=None, focus: str = "") -> dict:
     home = None
     last_err = ""
     for url in (f"https://{domain}", f"https://www.{domain}", f"http://{domain}"):
@@ -265,14 +288,15 @@ async def run(domain: str, extra_pages: int = 3, client=None) -> dict:
         return out
     final = home["final_url"] or home["url"]
     pages = [{**home, "name": "home"}]
-    urls, careers_url = pick_pages(final, home["links"], max(0, min(extra_pages, 4)))
+    cap = MAX_EXTRA_PAGES_FOCUS if focus in FOCUS_CATS else MAX_EXTRA_PAGES
+    urls, careers_url = pick_pages(final, home["links"], max(0, min(extra_pages, cap)), focus)
     if urls:
         extra = await crawl(urls, client)
         for u, r in zip(urls, extra):
             if r["success"] and r["html"]:
-                nm = next((n for n, rx in LINK_CATS if rx.search(urlparse(u).path)), "page")
+                nm = next((n for n, rx in ALL_CATS if rx.search(urlparse(u).path)), "page")
                 pages.append({**r, "name": nm})
-    cols, text, md = extract(domain, pages, careers_url)
+    cols, text, md = extract(domain, pages, careers_url, deep=focus in FOCUS_CATS)
     cols["enr_web_final_url"] = final
     cols["enr_web_status"] = "blocked" if _looks_blocked(home["html"], text) else "ok"
     cols["_text"] = text
