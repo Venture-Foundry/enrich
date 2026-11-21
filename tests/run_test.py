@@ -49,6 +49,8 @@ tenant_step._transport = httpx.MockTransport(tenant_handler)
 def llm_handler(request):
     body = json.loads(request.content)
     assert "Website text" in body["messages"][0]["content"]
+    if "delivery / channel partner" in body["messages"][0]["content"]:
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"summary": "Hotel group", "partner_type": "Vertical solution provider", "technologies": ["Opera PMS"], "confidence": "medium"})}}], "usage": {"prompt_tokens": 5000, "completion_tokens": 700}})
     return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"one_liner": "Hotel group in Dubai", "offerings": ["Hotels", "Dining"], "sector": "Hospitality", "customer_type": "B2C", "hq_emirate": "Dubai", "key_people": [{"name": "A. Person", "title": "CEO"}], "confidence": "medium"})}}]})
 llm_step._transport = httpx.MockTransport(llm_handler)
 
@@ -150,6 +152,16 @@ async def main_test():
         d4 = await wait_done(c, j4["id"])
         r4 = parse((await c.get(f"/api/jobs/{j4['id']}/download")).text)
         check("max_rows=3 honoured, only DNS columns added", len(r4) == 3 and "enr_site_title" not in r4[0] and "enr_mx_provider" in r4[0] and len(mock_crawl4ai.CALLS) == before)
+
+        print("partner focus job")
+        o2 = {"steps": ["web", "llm"], "domain_column": "domain", "extra_pages": 7, "focus": "partner", "llm_max_rows": 5, "row_concurrency": 4}
+        j2 = (await c.post("/api/jobs", files={"file": ("sample.csv", sample)}, data={"options": json.dumps(o2)})).json()
+        d2 = await wait_done(c, j2["id"])
+        check("focus job finished and reports focus + token usage", d2["status"] == "done" and d2["focus"] == "partner" and d2["llm_tokens_in"] > 0 and d2["llm_tokens_out"] > 0, d2)
+        r2 = parse((await c.get(f"/api/jobs/{j2['id']}/download")).text)
+        check("focus job outputs partner columns, not the short summary", "enr_p_summary" in r2[0] and "enr_llm_one_liner" not in r2[0])
+        check("focus job: partner profile filled", r2[0]["enr_p_summary"] == "Hotel group" and r2[0]["enr_p_technologies"] == "Opera PMS", (r2[0]["enr_p_summary"], r2[0]["enr_p_technologies"]))
+        check("focus crawl cached separately from basic crawl", "web_partner" in (await c.get("/api/config")).json()["cache"])
 
         print("validation + error paths")
         r = await c.post("/api/jobs", files={"file": ("s.csv", sample)}, data={"options": json.dumps({"steps": []})})

@@ -9,6 +9,11 @@ from .steps.web_step import CrawlServerError
 DOMAIN_CANDIDATES = ["domain", "primary_domain", "website", "website_url", "url", "site", "web"]
 META_COLS = ["enr_domain", "enr_status", "enr_errors", "enr_enriched_at"]
 STEP_ORDER = ["dns", "tenant", "web", "packs", "llm"]
+FOCUSES = ("", "partner", "customer", "both")
+
+def llm_profiles(focus):
+    """LLM profiles to run for a focus. No focus keeps the original short summary."""
+    return {"partner": ["partner"], "customer": ["customer"], "both": ["partner", "customer"]}.get(focus, ["summary"])
 JOBS: dict = {}
 
 def detect_domain_column(columns):
@@ -40,7 +45,9 @@ def job_columns(options):
     if "tenant" in steps: cols += tenant_step.COLUMNS
     if "web" in steps: cols += web_step.COLUMNS
     if "packs" in steps: cols += packs_mod.columns(options.get("packs", []))
-    if "llm" in steps: cols += llm_step.COLUMNS
+    if "llm" in steps:
+        for prof in llm_profiles(options.get("focus", "")):
+            cols += llm_step.COLUMNS_BY_PROFILE[prof]
     return cols
 
 class Job:
@@ -57,6 +64,7 @@ class Job:
         self.counts = {"ok": 0, "partial": 0, "error": 0, "no_domain": 0}
         self.cache_hits = 0
         self.llm_used = 0
+        self.llm_usage = {"in": 0, "out": 0}
         self.started = self.finished = None
         self.dir = os.path.join(settings.DATA_DIR, "jobs", self.id)
         self._locks: dict = {}
@@ -69,12 +77,13 @@ class Job:
         done = len(self.results)
         return {"id": self.id, "name": self.name, "status": self.status, "message": self.message, "total": len(self.rows), "done": done,
                 "counts": self.counts, "cache_hits": self.cache_hits, "created": self.created, "started": self.started, "finished": self.finished,
-                "steps": self.options["steps"], "with_domain": sum(1 for d in self.domains if d), "llm_used": self.llm_used}
+                "steps": self.options["steps"], "with_domain": sum(1 for d in self.domains if d), "llm_used": self.llm_used,
+                "focus": self.options.get("focus", ""), "llm_tokens_in": self.llm_usage["in"], "llm_tokens_out": self.llm_usage["out"]}
 
     def save_meta(self):
         os.makedirs(self.dir, exist_ok=True)
         json.dump({"id": self.id, "name": self.name, "options": self.options, "status": self.status, "message": self.message, "created": self.created,
-                   "started": self.started, "finished": self.finished, "in_cols": self.in_cols}, open(os.path.join(self.dir, "meta.json"), "w"))
+                   "started": self.started, "finished": self.finished, "in_cols": self.in_cols, "llm_usage": self.llm_usage, "llm_used": self.llm_used}, open(os.path.join(self.dir, "meta.json"), "w"))
 
     def csv_bytes(self):
         out_cols = self.out_cols
@@ -119,7 +128,9 @@ async def process_row(job: Job, i: int):
         jobs = []
         if "dns" in steps: jobs.append(("dns", lambda: dns_step.run(dom)))
         if "tenant" in steps: jobs.append(("tenant", lambda: tenant_step.run(dom)))
-        if "web" in steps: jobs.append(("web", lambda: web_step.run(dom, int(job.options.get("extra_pages", 3)))))
+        focus = job.options.get("focus", "")
+        web_key = f"web_{focus}" if focus else "web"  # deeper focus crawls are cached separately from the basic crawl
+        if "web" in steps: jobs.append((web_key, lambda: web_step.run(dom, int(job.options.get("extra_pages", 3)), focus=focus)))
         got = await asyncio.gather(*[_cached(job, dom, s, f) for s, f in jobs])
         web_payload = {}
         for (s, _), (payload, err) in zip(jobs, got):
@@ -127,7 +138,7 @@ async def process_row(job: Job, i: int):
                 errs.append(err)
                 continue
             ok += 1
-            if s == "web":
+            if s == web_key:
                 web_payload = payload
             if payload.get("_error"):
                 errs.append(payload["_error"])
@@ -147,9 +158,11 @@ async def process_row(job: Job, i: int):
                 elig = str(row.get(fc, "")).strip().lower() in allowed
             if elig and web_payload.get("_md"):
                 job.llm_used += 1
-                payload, err = await _cached(job, dom, "llm", lambda: llm_step.run(dom, web_payload["_md"]))
-                if err: errs.append(err)
-                else: res.update(payload)
+                for prof in llm_profiles(focus):
+                    key = "llm" if prof == "summary" else f"llm_{prof}"
+                    payload, err = await _cached(job, dom, key, lambda p=prof: llm_step.run(dom, web_payload["_md"], p, job.llm_usage))
+                    if err: errs.append(err)
+                    else: res.update(payload)
     status = "ok" if not errs else ("partial" if ok else "error")
     res["enr_status"], res["enr_errors"] = status, " | ".join(errs)[:300]
     job.counts[status] += 1
@@ -210,6 +223,11 @@ def create_job(name, raw, options) -> Job:
         rows = rows[:n]
     options = dict(options)
     options["steps"] = [s for s in STEP_ORDER if s in options.get("steps", [])]
+    options["focus"] = options.get("focus") or ""
+    if options["focus"] not in FOCUSES:
+        raise ValueError("focus must be partner, customer or both")
+    if options["focus"] and "web" not in options["steps"]:
+        raise ValueError("A partner/customer focus needs the website step (it controls how deeply each site is crawled)")
     if not options["steps"]:
         raise ValueError("Select at least one enrichment step")
     if "llm" in options["steps"] and not settings.LLM_ENABLED:
@@ -238,6 +256,8 @@ def load_jobs():
             job.created, job.started, job.finished = meta.get("created"), meta.get("started"), meta.get("finished")
             job.status = meta["status"] if meta["status"] in ("done", "cancelled", "error") else "interrupted"
             job.message = meta.get("message", "")
+            job.llm_usage = meta.get("llm_usage") or {"in": 0, "out": 0}
+            job.llm_used = int(meta.get("llm_used") or 0)
             rp = os.path.join(d, "results.jsonl")
             if os.path.exists(rp):
                 for line in open(rp, encoding="utf-8"):
