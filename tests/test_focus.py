@@ -31,7 +31,7 @@ tiny, _ = web_step.pick_pages("https://x.ae", LINKS, 2, "partner")
 check("page cap respected", len(tiny) <= 2, tiny)
 
 # --- LLM profiles, OpenAI-style
-PARTNER_JSON = {"one_liner": "Integrates and manages IT for banks", "primary_focus": "Managed SOC", "summary": "IT integrator", "partner_type": "System integrator", "service_lines": ["Managed SOC", "ERP implementation"],
+PARTNER_JSON = {"one_liner": "Integrates and manages IT for banks", "primary_focus": "Managed SOC", "summary": "IT integrator", "partner_type": "system integrator", "partner_type_evidence": "Delivers bank IT projects", "secondary_types": ["Managed service provider", "Cyber"], "target_customers": ["banks"], "case_studies": [{"customer": "Acme Bank", "delivered": "SOC", "technologies": "Sentinel"}], "capability_depth": ["40 certified engineers"], "service_lines": ["Managed SOC", "ERP implementation"],
     "technologies": ["Azure", "SAP S/4HANA"], "vendor_partnerships": [{"vendor": "Microsoft", "status": "Solutions Partner", "evidence": "badge on partners page"}],
     "microsoft_azure_signals": ["Azure migration practice"], "own_products_ip": [], "industries_served": ["Banking"], "named_customers": ["Acme Bank"],
     "delivery_model": "24x7 managed", "geography": ["Dubai"], "certifications_awards": ["ISO 27001"], "scale_signals": "200 staff",
@@ -103,7 +103,7 @@ async def main():
     r2 = await llm_step.run("x.ae", "# Home\nstuff", "partner", u2)
     check("anthropic endpoint + headers", calls[0][0].endswith("/v1/messages") and calls[0][1].get("x-api-key") == "k" and "anthropic-version" in calls[0][1], calls[0][:2])
     check("anthropic max_tokens set", calls[0][2]["max_tokens"] == settings.LLM_MAX_TOKENS)
-    check("anthropic reply parsed + usage", r2["enr_p_type"] == "System integrator" and u2 == {"in": 8000, "out": 1200}, (r2.get("enr_p_type"), u2))
+    check("anthropic reply parsed + usage", r2["enr_p_type"] == "System integrator & IT consulting" and u2 == {"in": 8000, "out": 1200}, (r2.get("enr_p_type"), u2))
 
 asyncio.run(main())
 
