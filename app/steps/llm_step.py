@@ -25,14 +25,51 @@ COLUMNS = SUMMARY_COLUMNS  # kept for backwards compatibility
 COLUMNS_BY_PROFILE = {"summary": SUMMARY_COLUMNS, "partner": PARTNER_COLUMNS, "customer": CUSTOMER_COLUMNS}
 _transport = None
 
-# Fixed sector list so labels are consistent across thousands of companies (free text drifts: "IT", "Technology", "Software house"...)
-TAXONOMY = ["Banking & financial services", "Insurance", "Investment & asset management", "Real estate & property development", "Construction & contracting",
-    "Engineering & infrastructure", "Oil, gas & energy", "Utilities & renewables", "Government & public sector", "Healthcare providers (hospitals & clinics)",
-    "Pharma, life sciences & medical devices", "Education & training", "Retail & e-commerce", "Food & beverage manufacturing", "Restaurants & hospitality",
-    "Tourism & travel", "Aviation & airlines", "Logistics, shipping & freight", "Automotive & mobility", "Manufacturing & industrial", "Trading & distribution",
-    "Telecommunications", "Media, advertising & marketing", "Professional services (legal, audit, consulting)", "Technology & IT services", "Software & SaaS",
-    "Facilities management & security services", "Staffing & HR services", "Non-profit & foundations", "Agriculture & fisheries", "Sports, entertainment & events",
-    "Beauty, wellness & fitness", "Other"]
+# Fixed sector list with a one-line definition each, so the model picks against what a sector INCLUDES, not just its name.
+# Bump TAXONOMY_VERSION whenever this changes: it is part of the cache key, so old answers are not replayed.
+TAXONOMY_VERSION = "t2"
+SECTOR_DEFS = {
+    "Banking & financial services": "banks, lenders, exchange houses, payments, fintech, crypto/Web3 wallets and exchanges, brokers",
+    "Insurance": "insurers, brokers, takaful, claims services",
+    "Investment & asset management": "funds, family offices, private equity, wealth managers, holding companies whose main business is investing",
+    "Real estate & property development": "developers, brokers, property management, valuation, real-estate marketplaces",
+    "Construction & contracting": "building, MEP, fit-out and civil contractors, building materials suppliers",
+    "Engineering & infrastructure": "engineering design and consulting, project management, ports, roads, rail infrastructure, pipeline and industrial inspection or integrity services",
+    "Oil, gas & energy": "oil and gas operators, oilfield services, petrochemicals, fuel distribution",
+    "Utilities & renewables": "power and water utilities, solar, wind, waste and recycling, sustainability bodies",
+    "Government & public sector": "ministries, authorities, municipalities, courts, regulators, government-owned service entities, international or intergovernmental organisations",
+    "Healthcare providers (hospitals & clinics)": "hospitals, clinics, labs, dental, fertility, pharmacies, care homes",
+    "Pharma, life sciences & medical devices": "drug makers, distributors, devices, biotech",
+    "Education & training": "schools, universities, training institutes, e-learning, tutoring",
+    "Retail & e-commerce": "shops, malls, supermarkets, fashion, online stores, consumer marketplaces, loyalty and discount apps",
+    "Food & beverage manufacturing": "food and drink producers and packers",
+    "Restaurants & hospitality": "hotels, resorts, restaurants, cafes, catering, F&B chains",
+    "Tourism & travel": "tour operators, travel agencies, attractions, visa and booking services",
+    "Aviation & airlines": "airlines, airports, ground handling, aircraft maintenance",
+    "Logistics, shipping & freight": "freight, courier, warehousing, shipping lines, ports operations, last-mile, supply chain",
+    "Automotive & mobility": "car dealers, rental, leasing, ride-hailing, auto parts, garages, rail and bus operators",
+    "Manufacturing & industrial": "factories, industrial equipment, metals, plastics, packaging, chemicals, furniture",
+    "Trading & distribution": "wholesalers, importers, commodity traders, general trading companies",
+    "Telecommunications": "mobile and fixed operators, ISPs, telecom infrastructure",
+    "Media, advertising & marketing": "publishers, news, broadcasters, agencies, PR, digital marketing, content and events media (NOT job boards: those are Staffing & HR)",
+    "Professional services (legal, audit, consulting)": "law, accounting, audit, tax, management consulting, business-setup and PRO services (NOT recruitment: that is Staffing & HR)",
+    "Technology & IT services": "system integrators, managed services, cybersecurity, IT consulting, web and app development agencies, cloud resellers",
+    "Software & SaaS": "companies selling their own software product or platform to other businesses or consumers (NOT a job board or marketplace, which takes the sector of what it trades in)",
+    "Facilities management & security services": "cleaning, maintenance, security guarding, pest control, landscaping, manpower supply for facilities",
+    "Staffing & HR services": "recruitment agencies, executive search, RPO, job boards and job portals, CV writing and career services, HR consulting, payroll, PEO, manpower supply",
+    "Non-profit & foundations": "charities, foundations, associations, chambers, religious and community bodies, personal or hobby sites with no business",
+    "Agriculture & fisheries": "farms, fisheries, agri-inputs, food security",
+    "Sports, entertainment & events": "clubs, venues, gaming, cinemas, event organisers, theme parks, ticketing",
+    "Beauty, wellness & fitness": "salons, spas, gyms, clinics focused on aesthetics, wellness brands",
+    "Other": "only if none of the above fits; say why in sector_evidence",
+}
+TAXONOMY = list(SECTOR_DEFS)
+TAXONOMY_PROMPT = "\n".join(f"- {k}: {v}" for k, v in SECTOR_DEFS.items())
+SECTOR_RULES = ("Sector rules: choose by what the organisation mainly does or earns money from, not by its name, its customers' industry, or what it buys. "
+                "A job board, CV writer or recruiter is always Staffing & HR services, even if it recruits for one industry (energy, healthcare). "
+                "A platform that sells software is Software & SaaS; a services firm that builds or runs IT for others is Technology & IT services. "
+                "Infrastructure, inspection and engineering firms serving oil and gas are Engineering & infrastructure unless they extract, refine or sell oil, gas or fuel. "
+                "If the site is not clearly a business (a person's blog, a defunct page), use Non-profit & foundations or Other and set confidence to low.")
 _TAX_LOWER = {t.lower(): t for t in TAXONOMY}
 
 def _sector(v):
@@ -88,10 +125,13 @@ Website text:
 
 "customer": """You are profiling a UAE organisation as a prospective customer for B2B software and services. %(rules)s
 Write for a sales strategist who needs to understand the business and its likely technology needs from stated facts only.
+Sectors (pick exactly one for "sector", and up to 2 for "secondary_sectors"):
+%(sector_defs)s
+%(sector_rules)s
 Keys:
 one_liner (one plain sentence, max 30 words, saying exactly what the organisation does and for whom, no marketing language),
 summary (120-200 words, plain prose: what the organisation does, who it serves, how it operates, scale and notable facts, and what is NOT clear from the site),
-sector (EXACTLY one value from this list, judged by what the organisation mainly does or earns from, not by its name or by what it buys: %(taxonomy)s),
+sector (EXACTLY one value from the list below, copied exactly as written before the colon),
 secondary_sectors (list of up to 2 more values from the same list, only if the text clearly shows a second major activity),
 sector_evidence (max 30 words: the specific facts or phrases in the text that justify the sector),
 sub_sector (short free-text label), business_model (e.g. "B2C retail", "B2B services", "Government entity", "Franchise group"),
@@ -103,7 +143,7 @@ technology_signals (list: named systems, platforms, vendors, certifications or d
 initiatives_news (list: expansions, launches, projects, partnerships, awards or hiring themes stated),
 functions_signalled (list: departments or roles evidenced as existing, e.g. IT, digital, customer experience, operations, procurement),
 key_people (list of up to 5 {name,title} only if explicitly named with a title),
-confidence ("high", "medium" or "low").%(isv_keys)s
+confidence ("high", "medium" or "low"; always fill this in: high = the site clearly describes the business, low = thin or unclear text).%(isv_keys)s
 Company domain: %(domain)s
 Website text:
 %(text)s""",
@@ -202,7 +242,7 @@ async def run(domain: str, markdown: str, profile: str = "summary", usage: dict 
         raise RuntimeError("no website text to summarise (run the website step first)")
     limit = 9000 if profile == "summary" else settings.LLM_MAX_CHARS
     isvs = isvs if profile == "customer" else None
-    prompt = PROMPTS[profile] % {"rules": RULES, "domain": domain, "text": markdown[:limit], "taxonomy": "; ".join(TAXONOMY),
+    prompt = PROMPTS[profile] % {"rules": RULES, "domain": domain, "text": markdown[:limit], "taxonomy": "; ".join(TAXONOMY), "sector_defs": TAXONOMY_PROMPT, "sector_rules": SECTOR_RULES,
                                  "isv_keys": isvs_mod.prompt_block(isvs) if isvs else ""}
     text = await _call(prompt, usage if usage is not None else {}, profile, model)
     if not (text or "").strip():
