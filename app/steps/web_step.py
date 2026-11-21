@@ -370,11 +370,12 @@ async def run(domain: str, extra_pages: int = 3, client=None, focus: str = "", s
     cols["enr_web_status"] = "blocked" if _looks_blocked(home["html"], text) else "ok"
     cols["_text"] = text
     cols["_md"] = md
-    if (not slow and cols["enr_web_status"] == "ok" and cols.get("enr_text_chars", 0) < THIN_CHARS
+    chars = lambda c: int(c.get("enr_text_chars") or 0)  # an unreachable result carries "" here, not 0
+    if (not slow and cols["enr_web_status"] == "ok" and chars(cols) < THIN_CHARS
             and not _ERRORISH.search(cols.get("enr_site_title", "") or "")):
         try:
             again = await run(domain, extra_pages, client, focus, slow=True)
-            if again.get("enr_text_chars", 0) > cols.get("enr_text_chars", 0):
+            if chars(again) > chars(cols):
                 return again
         except CrawlServerError:
             pass
