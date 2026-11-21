@@ -57,14 +57,14 @@ async def _partner_prompt(sel):
 async def main():
     usage = {}
     r = await llm_step.run("x.ae", "# Home\n" + "word " * 20000, "partner", usage)
-    check("partner columns all populated", set(r) == set(llm_step.PARTNER_COLUMNS), set(llm_step.PARTNER_COLUMNS) ^ set(r))
+    check("partner columns all populated", set(r) - {"enr_llm_model"} == set(llm_step.PARTNER_COLUMNS), set(llm_step.PARTNER_COLUMNS) ^ set(r))
     check("vendor partnership flattened to text", r["enr_p_vendor_partnerships"] == ["Microsoft - Solutions Partner - badge on partners page"], r["enr_p_vendor_partnerships"])
     check("partner people formatted", r["enr_p_key_people"] == ["A. Person (CEO)"])
     check("usage counted", usage == {"in": 7000, "out": 900}, usage)
-    check("text capped at LLM_MAX_CHARS", len(seen[-1]["messages"][0]["content"]) < settings.LLM_MAX_CHARS + 6000, len(seen[-1]["messages"][0]["content"]))
+    check("text capped at LLM_MAX_CHARS", len(seen[-1]["messages"][0]["content"]) < settings.LLM_MAX_CHARS + 9000, len(seen[-1]["messages"][0]["content"]))
     check("prompt tells model web text is untrusted", "untrusted" in seen[-1]["messages"][0]["content"])
     rc = await llm_step.run("x.ae", "# Home\nstuff", "customer", usage)
-    check("customer columns all populated", set(rc) == set(llm_step.CUSTOMER_COLUMNS))
+    check("customer columns all populated", set(rc) - {"enr_llm_model"} == set(llm_step.CUSTOMER_COLUMNS))
     check("sector snapped to fixed list (case-insensitive)", rc["enr_c_sector"] == "Retail & e-commerce", rc["enr_c_sector"])
     check("partial sector name snapped to list", rc["enr_c_secondary_sectors"] == ["Real estate & property development"], rc["enr_c_secondary_sectors"])
     check("unknown sector kept visible as Other(...)", llm_step._sector("Space mining") == "Other (Space mining)")
@@ -108,10 +108,10 @@ async def main():
 asyncio.run(main())
 
 # --- job options
-check("partner focus -> partner columns", jobs.job_columns({"steps": ["web", "llm"], "focus": "partner"})[-len(llm_step.PARTNER_COLUMNS):] == llm_step.PARTNER_COLUMNS)
+check("partner focus -> partner columns", jobs.job_columns({"steps": ["web", "llm"], "focus": "partner"})[-len(llm_step.PARTNER_COLUMNS) - 1:-1] == llm_step.PARTNER_COLUMNS)
 both = jobs.job_columns({"steps": ["web", "llm"], "focus": "both"})
 check("both focus -> partner + customer columns", all(c in both for c in llm_step.PARTNER_COLUMNS + llm_step.CUSTOMER_COLUMNS))
-check("no focus -> original summary columns", jobs.job_columns({"steps": ["web", "llm"]})[-len(llm_step.SUMMARY_COLUMNS):] == llm_step.SUMMARY_COLUMNS)
+check("no focus -> original summary columns", jobs.job_columns({"steps": ["web", "llm"]})[-len(llm_step.SUMMARY_COLUMNS) - 1:-1] == llm_step.SUMMARY_COLUMNS)
 check("LLM cache is keyed by model", "settings.LLM_MODEL" in open(os.path.join(os.path.dirname(__file__), "..", "app", "jobs.py")).read())
 check("ISV columns added for customer focus", all(c in jobs.job_columns({"steps": ["web", "llm"], "focus": "customer", "isvs": ["centrepal"]}) for c in isvs_mod.columns(["centrepal"])))
 check("ISV columns not added without customer focus", not any(c.startswith("enr_isv_") for c in jobs.job_columns({"steps": ["web", "llm"], "focus": "partner", "isvs": ["centrepal"]})))

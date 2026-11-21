@@ -66,6 +66,9 @@ async def crawl(urls, client=None) -> list:
                     r = await client.post(f"{settings.CRAWL4AI_URL}/crawl", json=_payload(urls, _minimal_mode), headers=_headers())
                 except (httpx.ConnectError, httpx.ConnectTimeout) as e:
                     raise CrawlServerError(f"cannot reach crawl4ai at {settings.CRAWL4AI_URL}: {type(e).__name__}")
+                except httpx.ReadTimeout:
+                    # the crawl server answered nothing within the limit: that site hangs; report each URL as a failed page
+                    return [{"url": u, "final_url": u, "success": False, "status": None, "html": "", "markdown": "", "links": {}, "error": "crawl timed out"} for u in urls]
                 except httpx.HTTPError as e:
                     raise CrawlServerError(f"crawl4ai request failed: {type(e).__name__}")
                 if r.status_code in (400, 422) and not _minimal_mode and attempt == 0:
