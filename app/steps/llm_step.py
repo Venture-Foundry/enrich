@@ -9,6 +9,7 @@ import json, re
 import httpx
 from .. import settings
 from . import isvs as isvs_mod
+from . import textfit
 
 SUMMARY_COLUMNS = ["enr_llm_one_liner", "enr_llm_offerings", "enr_llm_sector", "enr_llm_customer_type", "enr_llm_hq_emirate", "enr_llm_key_people", "enr_llm_confidence"]
 PARTNER_COLUMNS = [
@@ -27,7 +28,7 @@ _transport = None
 
 # Fixed sector list with a one-line definition each, so the model picks against what a sector INCLUDES, not just its name.
 # Bump TAXONOMY_VERSION whenever this changes: it is part of the cache key, so old answers are not replayed.
-TAXONOMY_VERSION = "t2"
+TAXONOMY_VERSION = "t3"  # t3: site text is now de-duplicated and shared across pages before it is sent
 SECTOR_DEFS = {
     "Banking & financial services": "banks, lenders, exchange houses, payments, fintech, crypto/Web3 wallets and exchanges, brokers",
     "Insurance": "insurers, brokers, takaful, claims services",
@@ -242,7 +243,7 @@ async def run(domain: str, markdown: str, profile: str = "summary", usage: dict 
         raise RuntimeError("no website text to summarise (run the website step first)")
     limit = 9000 if profile == "summary" else settings.LLM_MAX_CHARS
     isvs = isvs if profile == "customer" else None
-    prompt = PROMPTS[profile] % {"rules": RULES, "domain": domain, "text": markdown[:limit], "taxonomy": "; ".join(TAXONOMY), "sector_defs": TAXONOMY_PROMPT, "sector_rules": SECTOR_RULES,
+    prompt = PROMPTS[profile] % {"rules": RULES, "domain": domain, "text": textfit.fit_text(markdown, limit), "taxonomy": "; ".join(TAXONOMY), "sector_defs": TAXONOMY_PROMPT, "sector_rules": SECTOR_RULES,
                                  "isv_keys": isvs_mod.prompt_block(isvs) if isvs else ""}
     text = await _call(prompt, usage if usage is not None else {}, profile, model)
     if not (text or "").strip():
