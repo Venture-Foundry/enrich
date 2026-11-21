@@ -141,6 +141,18 @@ async def download(jid: str):
     return Response(j.csv_bytes(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{base}_enriched{suffix}.csv"'})
 
+@app.get("/api/text/{domain}")
+async def site_text(domain: str, focus: str = ""):
+    """The crawled site text kept in the cache for a domain (so other tools, e.g. Atlas, can re-read the source without re-crawling)."""
+    if focus not in ("", "partner", "customer"):
+        raise HTTPException(400, "focus must be blank, partner or customer")
+    key = f"web_{focus}" if focus else "web"
+    p = cache.get(domain.strip().lower(), key)
+    if not p:
+        raise HTTPException(404, f"No cached crawl for {domain} ({key})")
+    md = p.get("_md") or ""
+    return {"domain": domain.lower(), "focus": focus, "chars": len(md), "markdown": md}
+
 @app.post("/api/cache/clear")
 async def clear_cache():
     cache.clear()

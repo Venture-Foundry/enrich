@@ -167,7 +167,7 @@ async def process_row(job: Job, i: int):
                     if use_isv:
                         key += "_isv" + isvs_mod.digest(use_isv)  # new ISV definitions -> fresh answers, not a stale cache hit
                     model = job.options.get("llm_model") or settings.LLM_MODEL
-                    key += "@" + model  # answers are cached per model, so comparing models on the same rows really calls each model
+                    key += ("_" + llm_step.TAXONOMY_VERSION if prof == "customer" else "") + "@" + model  # answers are cached per model, so comparing models on the same rows really calls each model
                     payload, err = await _cached(job, dom, key, lambda p=prof, v=use_isv, m=model: llm_step.run(dom, web_payload["_md"], p, job.llm_usage, v, m))
                     if err: errs.append(err)
                     else: res.update(payload)
