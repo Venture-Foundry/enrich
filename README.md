@@ -35,8 +35,8 @@ Status per row: `ok`, `partial` (a step failed, or site unreachable/blocked), `e
 Pick **Profile focus** in step 2 (or `"focus": "partner" | "customer" | "both"` in the job options). It does two things:
 1. **Deeper crawl** (up to 8 extra pages, default 7): partner focus reads services, solutions, partners/alliances, industries, clients/case studies and certifications; customer focus reads products, locations, news/investor and company-story pages. The crawl is cached separately (`web_partner`, `web_customer`, `web_both`) from the basic one.
 2. **Structured LLM profile** (needs the LLM step on; up to `LLM_MAX_CHARS` of crawled text per company is sent):
-   * `enr_p_*` partner columns: summary (150-250 words), partner type, service lines, technologies, vendor partnerships with tier/evidence, Microsoft/Azure signals, own products/IP, industries served, named customers, delivery model, geography, certifications, scale, channel/co-sell signals, key people.
-   * `enr_c_*` customer columns: summary, sector/sub-sector, business model, products/services, customer channels (call centre, WhatsApp, app...), locations, scale, technology signals, initiatives/news, functions signalled, key people.
+   * `enr_p_*` partner columns: one-liner, primary focus, summary (150-250 words), partner type, service lines, technologies, vendor partnerships with tier/evidence, Microsoft/Azure signals, own products/IP, industries served, named customers, delivery model, geography, certifications, scale, channel/co-sell signals, key people.
+   * `enr_c_*` customer columns: one-liner, summary, sector (always one value from a fixed 33-item list, with up to 2 secondary sectors and the evidence for the choice), sub-sector, business model, products/services, customer channels (call centre, WhatsApp, app...), locations, scale, technology signals, initiatives/news, functions signalled, key people.
 
 The model is told to use only the crawled text and to leave a field blank rather than guess. Run a 25-row test first, read the output, then run the full list.
 Token usage per job (in/out) is shown in the progress panel and saved with the job, so you can see the real cost per company.
@@ -52,7 +52,7 @@ Ollama or a hosted model all work. The basic summary sends about 9k characters o
 
 ## Notes and limits
 * Rows with no domain (450 in the Apollo file) are not enriched; they need a domain-discovery step first.
-* Industry/emirate guesses are heuristics from website text, labelled with a confidence; treat them as a first filter.
+* `enr_industry_guess` and the emirate guess are keyword heuristics from website text; with a customer focus use `enr_c_sector` (LLM, fixed list, with evidence) instead.
 * Crawling is modest by default (3 concurrent crawl4ai requests, up to 4 extra pages per site). Adjust with `CRAWL_CONCURRENCY`.
 * DNS runs from the container. If lookups time out, set `DNS_SERVERS=1.1.1.1,8.8.8.8`.
 * If your crawl4ai version rejects the config objects, the portal retries once with a bare `{"urls": [...]}` payload; you can also

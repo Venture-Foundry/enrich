@@ -31,12 +31,12 @@ tiny, _ = web_step.pick_pages("https://x.ae", LINKS, 2, "partner")
 check("page cap respected", len(tiny) <= 2, tiny)
 
 # --- LLM profiles, OpenAI-style
-PARTNER_JSON = {"summary": "IT integrator", "partner_type": "System integrator", "service_lines": ["Managed SOC", "ERP implementation"],
+PARTNER_JSON = {"one_liner": "Integrates and manages IT for banks", "primary_focus": "Managed SOC", "summary": "IT integrator", "partner_type": "System integrator", "service_lines": ["Managed SOC", "ERP implementation"],
     "technologies": ["Azure", "SAP S/4HANA"], "vendor_partnerships": [{"vendor": "Microsoft", "status": "Solutions Partner", "evidence": "badge on partners page"}],
     "microsoft_azure_signals": ["Azure migration practice"], "own_products_ip": [], "industries_served": ["Banking"], "named_customers": ["Acme Bank"],
     "delivery_model": "24x7 managed", "geography": ["Dubai"], "certifications_awards": ["ISO 27001"], "scale_signals": "200 staff",
     "channel_signals": ["Resells Fortinet"], "key_people": [{"name": "A. Person", "title": "CEO"}], "confidence": "high"}
-CUSTOMER_JSON = {"summary": "Retail group", "sector": "Retail", "sub_sector": "Fashion", "business_model": "B2C retail", "products_services": ["Apparel"],
+CUSTOMER_JSON = {"one_liner": "Sells fashion in 40 stores", "summary": "Retail group", "sector": "retail & e-commerce", "secondary_sectors": ["Real estate"], "sector_evidence": "40 stores, online shop", "sub_sector": "Fashion", "business_model": "B2C retail", "products_services": ["Apparel"],
     "customer_channels": ["WhatsApp", "Call centre"], "locations": ["Dubai", "40 stores"], "scale_signals": "40 stores", "technology_signals": ["Shopify"],
     "initiatives_news": ["New flagship"], "functions_signalled": ["IT"], "key_people": [], "confidence": "medium"}
 seen = []
@@ -57,6 +57,11 @@ async def main():
     check("prompt tells model web text is untrusted", "untrusted" in seen[-1]["messages"][0]["content"])
     rc = await llm_step.run("x.ae", "# Home\nstuff", "customer", usage)
     check("customer columns all populated", set(rc) == set(llm_step.CUSTOMER_COLUMNS))
+    check("sector snapped to fixed list (case-insensitive)", rc["enr_c_sector"] == "Retail & e-commerce", rc["enr_c_sector"])
+    check("partial sector name snapped to list", rc["enr_c_secondary_sectors"] == ["Real estate & property development"], rc["enr_c_secondary_sectors"])
+    check("unknown sector kept visible as Other(...)", llm_step._sector("Space mining") == "Other (Space mining)")
+    check("one-liner + sector evidence captured", rc["enr_c_one_liner"] and rc["enr_c_sector_evidence"])
+    check("sector list is in the customer prompt", "Logistics, shipping & freight" in seen[-1]["messages"][0]["content"])
     check("usage accumulates", usage == {"in": 14000, "out": 1800}, usage)
     try:
         await llm_step.run("x.ae", "x", "bogus"); check("unknown profile rejected", False)
