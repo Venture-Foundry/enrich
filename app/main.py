@@ -3,6 +3,7 @@ import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from . import cache, jobs, settings
+from .steps import llm_step
 from .steps import isvs as isvs_mod, packs as packs_mod, web_step
 
 app = FastAPI(title="Enrichment Portal")
@@ -38,6 +39,29 @@ async def config():
     return {"crawl4ai_url": settings.CRAWL4AI_URL, "llm_enabled": settings.LLM_ENABLED, "llm_model": settings.LLM_MODEL if settings.LLM_ENABLED else "",
             "packs": {k: v.get("label", k) for k, v in p.items()}, "isvs": {k: v.get("label", k) for k, v in isvs_mod.load().items()}, "cache": cache.stats(), "cache_ttl_days": settings.CACHE_TTL_DAYS,
             "defaults": {"row_concurrency": settings.ROW_CONCURRENCY, "crawl_concurrency": settings.CRAWL_CONCURRENCY}}
+
+@app.get("/api/llm-settings")
+async def get_llm_settings():
+    return settings.llm_public()
+
+@app.put("/api/llm-settings")
+async def put_llm_settings(request: Request):
+    try:
+        settings.save_llm(await request.json())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return settings.llm_public()
+
+@app.post("/api/llm-settings/test")
+async def test_llm_settings(request: Request):
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    try:
+        return await llm_step.ping((body.get("model") or "").strip() or None)
+    except RuntimeError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=200)
 
 @app.get("/api/health")
 async def health(crawl: bool = False):

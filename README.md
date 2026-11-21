@@ -48,10 +48,14 @@ quoting short evidence and listing any named competitor it finds; the portal the
 `_incumbents` (competitor tools named on the site) and `_notes`. "Not mentioned" is scored as not found, never as a guess. Entries with no signals are ignored.
 CentrePal and PulpoAR are drafts; the other ISVs are empty stubs to fill in. Changing a definition automatically refreshes cached answers for that ISV set.
 
+### LLM settings screen (no .env editing)
+Open **LLM settings** at the top of the portal: pick a preset (OpenRouter, Anthropic, Gemini, custom), paste the API key, type the model ID, optionally set the extra request JSON and limits, then **Save & test connection** (a few-token real call). Settings are saved in the data volume (`llm_settings.json`, mode 0600) and apply immediately without a restart; they override any `LLM_*` values in `.env`, which remain only as first-run defaults. The key is write-only: the portal never sends it back to the browser (only its last 4 characters), and changing the base URL clears it so a key is never posted to a different endpoint. Set `PORTAL_USER` / `PORTAL_PASSWORD` if anyone else can reach the portal.
+To compare models, type a different model ID in **LLM: model for this run** in step 2; no change to saved settings is needed.
+
 ### OpenRouter and other options
-`LLM_EXTRA_BODY` merges JSON into every request, e.g. for OpenRouter `{"provider":{"data_collection":"deny"},"reasoning":{"enabled":false}}`
+`LLM_EXTRA_BODY` (or the Extra request JSON box) merges JSON into every request, e.g. for OpenRouter `{"provider":{"data_collection":"deny"},"reasoning":{"enabled":false}}`
 (keeps prompts away from providers that retain data, and stops reasoning models spending output tokens on thinking).
-To compare models on the same rows: run a 25-row job per model (change `LLM_MODEL`, restart). The crawl is reused from cache, and LLM answers are cached per model, so each model is really called and the comparison is fair.
+To compare models on the same rows: run a 25-row job per model (set the model for the run in step 2). The crawl is reused from cache, and LLM answers are cached per model, so each model is really called and the comparison is fair.
 
 LLM providers: `LLM_PROVIDER=openai` (default, any OpenAI-compatible endpoint) or `LLM_PROVIDER=anthropic` (native Claude Messages API; set `LLM_API_KEY` and `LLM_MODEL`, leave `LLM_BASE_URL` blank).
 

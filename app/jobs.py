@@ -80,7 +80,7 @@ class Job:
         return {"id": self.id, "name": self.name, "status": self.status, "message": self.message, "total": len(self.rows), "done": done,
                 "counts": self.counts, "cache_hits": self.cache_hits, "created": self.created, "started": self.started, "finished": self.finished,
                 "steps": self.options["steps"], "with_domain": sum(1 for d in self.domains if d), "llm_used": self.llm_used,
-                "focus": self.options.get("focus", ""), "llm_tokens_in": self.llm_usage["in"], "llm_tokens_out": self.llm_usage["out"]}
+                "focus": self.options.get("focus", ""), "llm_model": self.options.get("llm_model") or (settings.LLM_MODEL if "llm" in self.options["steps"] else ""), "llm_tokens_in": self.llm_usage["in"], "llm_tokens_out": self.llm_usage["out"]}
 
     def save_meta(self):
         os.makedirs(self.dir, exist_ok=True)
@@ -166,8 +166,9 @@ async def process_row(job: Job, i: int):
                     use_isv = isv_defs if prof == "customer" else None
                     if use_isv:
                         key += "_isv" + isvs_mod.digest(use_isv)  # new ISV definitions -> fresh answers, not a stale cache hit
-                    key += "@" + settings.LLM_MODEL  # answers are cached per model, so comparing models on the same rows really calls each model
-                    payload, err = await _cached(job, dom, key, lambda p=prof, v=use_isv: llm_step.run(dom, web_payload["_md"], p, job.llm_usage, v))
+                    model = job.options.get("llm_model") or settings.LLM_MODEL
+                    key += "@" + model  # answers are cached per model, so comparing models on the same rows really calls each model
+                    payload, err = await _cached(job, dom, key, lambda p=prof, v=use_isv, m=model: llm_step.run(dom, web_payload["_md"], p, job.llm_usage, v, m))
                     if err: errs.append(err)
                     else: res.update(payload)
     status = "ok" if not errs else ("partial" if ok else "error")
@@ -230,6 +231,7 @@ def create_job(name, raw, options) -> Job:
         rows = rows[:n]
     options = dict(options)
     options["steps"] = [s for s in STEP_ORDER if s in options.get("steps", [])]
+    options["llm_model"] = str(options.get("llm_model") or "").strip()  # "" = use the model saved in LLM settings
     options["focus"] = options.get("focus") or ""
     if options["focus"] not in FOCUSES:
         raise ValueError("focus must be partner, customer or both")

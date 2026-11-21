@@ -56,6 +56,25 @@
     </div>
   </section>
 
+  <section class="card" id="llmCard">
+    <details id="llmDetails">
+      <summary style="cursor:pointer;font-weight:600">LLM settings <span id="llmSummary" class="muted" style="font-weight:400"></span></summary>
+      <div class="grid" style="margin-top:12px">
+        <label>Provider preset<select id="llmPreset"></select></label>
+        <label>Base URL<input type="text" id="llmUrl" placeholder="https://openrouter.ai/api/v1"></label>
+        <label>API key<input type="password" id="llmKey" autocomplete="off" placeholder="paste key"><small class="muted" id="llmKeyNote"></small></label>
+        <label>Model<input type="text" id="llmModel" placeholder="copy the exact model ID from your provider"></label>
+        <label>Max characters of site text sent per company<input type="number" id="llmChars" min="2000" max="200000"></label>
+        <label>Max reply tokens per company<input type="number" id="llmTokens" min="200" max="32000"></label>
+      </div>
+      <label style="display:block;margin-top:10px">Extra request JSON (optional, merged into every request)
+        <input type="text" id="llmExtra" placeholder='e.g. {"reasoning":{"enabled":false},"provider":{"data_collection":"deny"}}'></label>
+      <div class="row" style="margin-top:12px"><button class="primary" id="llmSave">Save &amp; test connection</button><span id="llmMsg" class="muted"></span></div>
+      <p class="muted" id="llmAuthNote" style="margin:10px 0 0"></p>
+      <p class="muted" style="margin:6px 0 0">Saved in the portal's data volume (not in .env); the key is never shown again. Changing the URL clears the saved key, so type it again.</p>
+    </details>
+  </section>
+
   <section class="card">
     <h2>2 · Choose enrichment</h2>
     <div class="grid">
@@ -76,6 +95,7 @@
     </div>
     <div id="isvBox" class="row hide" style="margin-top:12px"><b>ISV fit signals (customer focus):</b></div>
     <div id="llmOpts" class="grid hide" style="margin-top:12px">
+      <label>LLM: model for this run (blank = saved model)<input type="text" id="llmRunModel" placeholder="e.g. to compare models without changing settings"></label>
       <label>LLM: max rows to summarise<input type="number" id="llmMax" value="25" min="0"></label>
       <label>LLM: only rows where column<select id="llmCol"><option value="">(any row)</option></select></label>
       <label>…equals one of (comma-separated)<input type="text" id="llmVals" placeholder="e.g. Platinum, Gold"></label>
@@ -161,7 +181,7 @@ $('start').onclick = async () => {
   if (!steps.length) { $('msg').textContent = 'Select at least one step.'; return; }
   const opts = { steps, domain_column: $('domCol').value, max_rows: +$('maxRows').value || 0, extra_pages: +$('extra').value, row_concurrency: +$('rowc').value,
     force: $('force').checked, packs: [...document.querySelectorAll('.pk:checked')].map(x => x.value),
-    llm_max_rows: +$('llmMax').value || 0, llm_filter_column: $('llmCol').value, llm_filter_values: $('llmVals').value, focus: $('focus').value,
+    llm_max_rows: +$('llmMax').value || 0, llm_filter_column: $('llmCol').value, llm_filter_values: $('llmVals').value, llm_model: $('llmRunModel').value.trim(), focus: $('focus').value,
     isvs: ($('s_llm').checked && ['customer', 'both'].includes($('focus').value)) ? [...document.querySelectorAll('.isvk:checked')].map(x => x.value) : [] };
   const fd = new FormData(); fd.append('file', file); fd.append('options', JSON.stringify(opts));
   const r = await fetch('/api/jobs', { method: 'POST', body: fd });
@@ -199,7 +219,36 @@ async function loadHistory() {
   document.querySelectorAll('[data-watch]').forEach(a => a.onclick = e => { e.preventDefault(); watch(a.dataset.watch); });
   document.querySelectorAll('[data-rerun]').forEach(a => a.onclick = async e => { e.preventDefault(); const r = await (await fetch(`/api/jobs/${a.dataset.rerun}/rerun`, { method: 'POST' })).json(); watch(r.id); });
 }
-loadCfg().then(() => { syncOpts(); ping(false); loadHistory(); });
+
+let llmCfg = null;
+function presetFor(c) { return Object.entries(c.presets).find(([k, v]) => k !== 'custom' && v.base_url === c.base_url && v.provider === c.provider)?.[0] || 'custom'; }
+async function loadLlm() {
+  llmCfg = await (await fetch('/api/llm-settings')).json();
+  const c = llmCfg;
+  $('llmPreset').innerHTML = Object.entries(c.presets).map(([k, v]) => `<option value="${esc(k)}">${esc(v.label)}</option>`).join('');
+  $('llmPreset').value = presetFor(c);
+  $('llmUrl').value = c.base_url; $('llmModel').value = c.model; $('llmChars').value = c.max_chars; $('llmTokens').value = c.max_tokens; $('llmExtra').value = c.extra_body; $('llmKey').value = '';
+  $('llmKey').placeholder = c.api_key_set ? 'saved ' + (c.api_key_hint || '') + ' - leave blank to keep' : 'paste key';
+  $('llmSummary').textContent = c.enabled ? '· ' + c.model + (c.api_key_set ? '' : ' · no key') : '· not configured';
+  $('llmAuthNote').textContent = c.auth_enabled ? '' : 'No portal password is set (PORTAL_USER / PORTAL_PASSWORD): anyone who can open this page can change these settings and use the key. Keep the portal on your LAN or set a password.';
+  if (!c.enabled) $('llmDetails').open = true;
+}
+$('llmPreset').onchange = () => { const p = llmCfg.presets[$('llmPreset').value]; if (p.base_url) $('llmUrl').value = p.base_url; };
+$('llmSave').onclick = async () => {
+  const p = llmCfg.presets[$('llmPreset').value];
+  const body = { provider: p.provider, base_url: $('llmUrl').value.trim(), model: $('llmModel').value.trim(), max_chars: $('llmChars').value, max_tokens: $('llmTokens').value, extra_body: $('llmExtra').value };
+  if ($('llmKey').value.trim()) body.api_key = $('llmKey').value.trim();
+  $('llmMsg').textContent = 'Saving…';
+  const r = await fetch('/api/llm-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) { $('llmMsg').textContent = (await r.json()).detail || 'Could not save'; return; }
+  await loadLlm(); await loadCfg();
+  if (!llmCfg.enabled) { $('llmMsg').textContent = 'Saved, but a base URL and model are both needed.'; return; }
+  $('llmMsg').textContent = 'Saved. Testing…';
+  const t = await (await fetch('/api/llm-settings/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json();
+  $('llmMsg').textContent = t.ok ? `Connected · ${t.model} · ${t.ms} ms · reply: ${t.reply}` : 'Saved, but the test call failed: ' + t.error;
+  $('llmMsg').className = t.ok ? 'st-ok' : 'st-error';
+};
+loadCfg().then(() => { syncOpts(); ping(false); loadHistory(); loadLlm(); });
 </script>
 </body>
 </html>

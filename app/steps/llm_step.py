@@ -158,14 +158,15 @@ def _map(profile, j):
         "enr_llm_key_people": _people(j.get("key_people")), "enr_llm_confidence": j.get("confidence", ""),
     }
 
-async def _call(prompt: str, usage: dict, profile: str) -> str:
+async def _call(prompt: str, usage: dict, profile: str, model: str = None) -> str:
     extra = settings.LLM_EXTRA_BODY
+    model = model or settings.LLM_MODEL
     max_tokens = settings.LLM_MAX_TOKENS if profile != "summary" else 800
     async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT_S, transport=_transport) as c:
         try:
             if settings.LLM_PROVIDER == "anthropic":
                 headers = {"x-api-key": settings.LLM_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"}
-                body = {"model": settings.LLM_MODEL, "max_tokens": max_tokens, "temperature": 0, "messages": [{"role": "user", "content": prompt}], **extra}
+                body = {"model": model, "max_tokens": max_tokens, "temperature": 0, "messages": [{"role": "user", "content": prompt}], **extra}
                 r = await c.post(f"{settings.LLM_BASE_URL}/v1/messages", json=body, headers=headers)
                 r.raise_for_status()
                 j = r.json()
@@ -173,7 +174,7 @@ async def _call(prompt: str, usage: dict, profile: str) -> str:
                 usage["in"] = usage.get("in", 0) + int(u.get("input_tokens") or 0)
                 usage["out"] = usage.get("out", 0) + int(u.get("output_tokens") or 0)
                 return "".join(b.get("text", "") for b in j.get("content", []) if b.get("type") == "text")
-            body = {"model": settings.LLM_MODEL, "temperature": 0, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}],
+            body = {"model": model, "temperature": 0, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}],
                     "response_format": {"type": "json_object"}, **extra}
             headers = {"Authorization": f"Bearer {settings.LLM_API_KEY}"} if settings.LLM_API_KEY else {}
             r = await c.post(f"{settings.LLM_BASE_URL}/chat/completions", json=body, headers=headers)
@@ -186,10 +187,12 @@ async def _call(prompt: str, usage: dict, profile: str) -> str:
             usage["in"] = usage.get("in", 0) + int(u.get("prompt_tokens") or 0)
             usage["out"] = usage.get("out", 0) + int(u.get("completion_tokens") or 0)
             return j["choices"][0]["message"]["content"]
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"LLM call failed: HTTP {e.response.status_code} {e.response.text[:160]}".strip())
         except (httpx.HTTPError, KeyError, ValueError, TypeError) as e:
             raise RuntimeError(f"LLM call failed: {type(e).__name__}")
 
-async def run(domain: str, markdown: str, profile: str = "summary", usage: dict = None, isvs: dict = None) -> dict:
+async def run(domain: str, markdown: str, profile: str = "summary", usage: dict = None, isvs: dict = None, model: str = None) -> dict:
     if not settings.LLM_ENABLED:
         raise RuntimeError("LLM not configured")
     if profile not in PROMPTS:
@@ -200,7 +203,7 @@ async def run(domain: str, markdown: str, profile: str = "summary", usage: dict 
     isvs = isvs if profile == "customer" else None
     prompt = PROMPTS[profile] % {"rules": RULES, "domain": domain, "text": markdown[:limit], "taxonomy": "; ".join(TAXONOMY),
                                  "isv_keys": isvs_mod.prompt_block(isvs) if isvs else ""}
-    text = await _call(prompt, usage if usage is not None else {}, profile)
+    text = await _call(prompt, usage if usage is not None else {}, profile, model)
     m = re.search(r"\{.*\}", text, re.S)
     try:
         j = json.loads(m.group(0)) if m else {}
@@ -210,3 +213,14 @@ async def run(domain: str, markdown: str, profile: str = "summary", usage: dict 
     if isvs:
         out.update(isvs_mod.map_result(isvs, j.get("isv_signals")))
     return out
+
+
+async def ping(model: str = None) -> dict:
+    """Tiny real request (a few tokens) to check URL, key and model from the portal's settings screen."""
+    import time
+    if not settings.LLM_ENABLED:
+        raise RuntimeError("LLM is not configured: set a base URL and a model first")
+    usage, t0 = {}, time.time()
+    text = await _call('Reply with only this JSON: {"ok": true}', usage, "summary", model)
+    return {"ok": True, "model": model or settings.LLM_MODEL, "reply": text.strip()[:120], "ms": int((time.time() - t0) * 1000),
+            "tokens_in": usage.get("in", 0), "tokens_out": usage.get("out", 0)}

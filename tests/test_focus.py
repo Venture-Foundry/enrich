@@ -123,5 +123,53 @@ for opts, label in (({"steps": ["dns"], "focus": "partner"}, "focus without webs
         jobs.create_job("t.csv", csv, opts); check(label, False)
     except ValueError:
         check(label, True)
+# --- settings screen API: saved in the portal (not .env), key never returned, safe URL changes
+async def api_tests():
+    from app import main
+    llm_step._transport = httpx.MockTransport(openai_handler)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://t") as c:
+        key = "sk-or-v1-abcdefgh1234567"
+        r = await c.put("/api/llm-settings", json={"provider": "openai", "base_url": "https://openrouter.ai/api/v1/", "model": "vendor/model-one", "api_key": key,
+                                                   "extra_body": '{"reasoning": {"enabled": false}}', "max_chars": 20000, "max_tokens": 2000})
+        check("save settings from the portal", r.status_code == 200 and r.json()["model"] == "vendor/model-one" and r.json()["enabled"], r.text)
+        check("API key never returned, only last 4", key not in r.text and r.json()["api_key_set"] and r.json()["api_key_hint"] == "...4567", r.text)
+        check("settings applied live (no restart)", settings.LLM_MODEL == "vendor/model-one" and settings.LLM_API_KEY == key and settings.LLM_EXTRA_BODY == {"reasoning": {"enabled": False}} and settings.LLM_MAX_CHARS == 20000)
+        check("trailing slash trimmed", settings.LLM_BASE_URL == "https://openrouter.ai/api/v1")
+        f = settings._llm_file()
+        check("saved to the data volume with 0600 permissions", os.path.exists(f) and (os.stat(f).st_mode & 0o777) == 0o600, oct(os.stat(f).st_mode))
+        check("GET shows source = portal", (await c.get("/api/llm-settings")).json()["source"] == "portal")
+        r = await c.put("/api/llm-settings", json={"model": "vendor/model-two"})
+        check("blank key on later save keeps the saved key", r.json()["api_key_set"] and settings.LLM_API_KEY == key and settings.LLM_MODEL == "vendor/model-two")
+        r = await c.put("/api/llm-settings", json={"extra_body": "{not json"})
+        check("invalid extra JSON rejected", r.status_code == 400, r.text)
+        r = await c.put("/api/llm-settings", json={"provider": "bogus"})
+        check("unknown provider rejected", r.status_code == 400)
+        r = await c.put("/api/llm-settings", json={"base_url": "ftp://x"})
+        check("non-http base URL rejected", r.status_code == 400)
+        r = await c.put("/api/llm-settings", json={"max_tokens": 5})
+        check("out-of-range limit rejected", r.status_code == 400)
+        t = (await c.post("/api/llm-settings/test", json={})).json()
+        check("test call works and reports tokens", t["ok"] and t["tokens_in"] == 7000 and t["model"] == "vendor/model-two", t)
+        t = (await c.post("/api/llm-settings/test", json={"model": "other/model"})).json()
+        check("test can target another model", t["ok"] and seen[-1]["model"] == "other/model", seen[-1].get("model"))
+        # explicit per-run model is used in the request and in the cache key
+        await llm_step.run("x.ae", "# Home\nstuff", "customer", {}, None, "run/model")
+        check("per-run model sent to the provider", seen[-1]["model"] == "run/model")
+        # a failing provider gives a readable reason
+        llm_step._transport = httpx.MockTransport(lambda req: httpx.Response(401, text="invalid api key"))
+        t = (await c.post("/api/llm-settings/test", json={})).json()
+        check("failed test shows HTTP status and reason", t["ok"] is False and "401" in t["error"] and "invalid api key" in t["error"], t)
+        llm_step._transport = httpx.MockTransport(openai_handler)
+        # security: pointing at a different endpoint drops the saved key
+        r = await c.put("/api/llm-settings", json={"base_url": "https://evil.example/v1"})
+        check("changing the URL clears the saved key", r.status_code == 200 and not r.json()["api_key_set"] and settings.LLM_API_KEY == "", r.text)
+        r = await c.put("/api/llm-settings", json={"base_url": "https://openrouter.ai/api/v1", "api_key": key})
+        check("key can be set together with a new URL", r.json()["api_key_set"])
+        r = await c.put("/api/llm-settings", json={"clear_api_key": True})
+        check("key can be cleared explicitly", not r.json()["api_key_set"])
+        o = jobs.create_job("t.csv", b"domain\nx.ae\n", {"steps": ["web", "llm"], "focus": "customer", "llm_model": " run/model "}).options
+        check("per-run model stored on the job", o["llm_model"] == "run/model", o)
+asyncio.run(api_tests())
+
 print(f"\n{OK} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
