@@ -28,7 +28,7 @@ _transport = None
 
 # Fixed sector list with a one-line definition each, so the model picks against what a sector INCLUDES, not just its name.
 # Bump TAXONOMY_VERSION whenever this changes: it is part of the cache key, so old answers are not replayed.
-TAXONOMY_VERSION = "t4"  # t3: site text is now de-duplicated and shared across pages before it is sent
+TAXONOMY_VERSION = "t5"  # t3: site text is now de-duplicated and shared across pages before it is sent
 SECTOR_DEFS = {
     "Banking & financial services": "banks, lenders, exchange houses, payments, fintech, crypto/Web3 wallets and exchanges, brokers",
     "Insurance": "insurers, brokers, takaful, claims services",
@@ -157,7 +157,7 @@ certifications_awards (list: ISO standards, vendor certifications, awards),
 scale_signals (short text: employee numbers, years in business, offices, projects, only if stated),
 target_customers (list: the buyers they serve, e.g. "banks", "government entities", "SMEs", "large enterprises", only if stated),
 case_studies (list of objects {customer, delivered, technologies}: each named project or case study, what was delivered and with which technology; only if stated),
-capability_depth (list of evidence of how deep their capability is: certified engineer or consultant counts, dedicated practices or centres of excellence, years of experience on a platform, number of projects or clients, accreditations),
+capability_depth (list of evidence of how deep their capability is, ONLY what the text states: certified engineer or consultant counts, dedicated practices or centres of excellence, years of experience on a platform, number of projects or clients, accreditations; never write "implied" or guess),
 channel_signals (list of statements showing they resell, co-sell, host or implement third-party software for other vendors/ISVs, marketplace or partner-programme participation),
 key_people (list of up to 5 {name,title} only if explicitly named with a title),
 confidence ("high", "medium" or "low", based on how much usable text there was).
@@ -215,7 +215,7 @@ def _map(profile, j):
         return {
             "enr_p_one_liner": _s(j.get("one_liner")), "enr_p_primary_focus": _s(j.get("primary_focus")),
             "enr_p_summary": _s(j.get("summary")), "enr_p_type": _ptype(j.get("partner_type")), "enr_p_type_evidence": _s(j.get("partner_type_evidence")),
-            "enr_p_secondary_types": [_ptype(x) for x in _list(j.get("secondary_types"))[:2]],
+            "enr_p_secondary_types": [t for t in (_ptype(x) for x in _list(j.get("secondary_types"))) if t not in ("Other", "Not a technology partner") and not t.startswith("Other (")][:2],
             "enr_p_service_lines": _list(j.get("service_lines")), "enr_p_technologies": _list(j.get("technologies")),
             "enr_p_vendor_partnerships": _list(j.get("vendor_partnerships")), "enr_p_microsoft_azure_signals": _list(j.get("microsoft_azure_signals")),
             "enr_p_own_products_ip": _list(j.get("own_products_ip")), "enr_p_industries_served": _list(j.get("industries_served")),
@@ -301,6 +301,7 @@ async def run(domain: str, markdown: str, profile: str = "summary", usage: dict 
     except ValueError:
         raise RuntimeError("LLM returned non-JSON")
     out = _map(profile, j)
+    out["enr_llm_model"] = model or settings.LLM_MODEL  # which model wrote this profile, so outputs are never ambiguous
     if isvs:
         out.update(isvs_mod.map_result(isvs, j.get("isv_signals")))
     return out

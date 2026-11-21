@@ -50,6 +50,7 @@ def job_columns(options):
             cols += llm_step.COLUMNS_BY_PROFILE[prof]
             if prof == "customer":
                 cols += isvs_mod.columns(list(isvs_mod.select(options.get("isvs", []))))
+        cols.append("enr_llm_model")
     return cols
 
 class Job:
@@ -132,6 +133,7 @@ async def process_row(job: Job, i: int):
         if "tenant" in steps: jobs.append(("tenant", lambda: tenant_step.run(dom)))
         focus = job.options.get("focus", "")
         web_key = f"web_{focus}" if focus else "web"  # deeper focus crawls are cached separately from the basic crawl
+        if focus == "partner": web_key += "_v2"  # v2 = deeper partner crawl (12 pages, sitemap); older partner crawls are not reused
         if "web" in steps: jobs.append((web_key, lambda: web_step.run(dom, int(job.options.get("extra_pages", 3)), focus=focus)))
         got = await asyncio.gather(*[_cached(job, dom, s, f) for s, f in jobs])
         web_payload = {}
@@ -203,7 +205,10 @@ async def run_job(job: Job):
                 fails_in_row["n"] += 1
                 if fails_in_row["n"] >= 5:
                     job.status, job.message = "error", f"Stopped: {e}"
-                return
+                    return
+                # one bad site must not leave a silently blank row: record it so it can be re-run
+                res = {"enr_domain": job.domains[i], "enr_status": "error", "enr_errors": f"crawl server: {str(e)[:140]}", "enr_enriched_at": _now()}
+                job.counts["error"] += 1
             except Exception as e:  # never let one row kill the job
                 res = {"enr_domain": job.domains[i], "enr_status": "error", "enr_errors": f"internal: {type(e).__name__}: {str(e)[:120]}", "enr_enriched_at": _now()}
                 job.counts["error"] += 1

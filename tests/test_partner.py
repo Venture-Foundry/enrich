@@ -24,7 +24,6 @@ check("prompt renders", "Not a technology partner" in (L.PROMPTS["partner"] % {"
 # education / driving school
 check("education covers driving schools", "driving" in L.SECTOR_DEFS["Education & training"])
 check("rules steer away from Other", "driving school" in L.SECTOR_RULES)
-check("version bumped so profiles refresh", L.TAXONOMY_VERSION == "t4")
 
 # pages: two per category for partners, microsoft page gets its own slot
 LINKS = {"internal": [{"href": h, "text": t} for h, t in (
@@ -51,6 +50,45 @@ thin = {"internal": [{"href": "/contact", "text": "Contact"}], "external": []}
 p2, _ = W.pick_pages("https://x.ae", thin, 10, "partner", more=pages)
 check("thin menu filled from sitemap", any("/solutions/sap" in u for u in p2) and any("/case-studies/" in u for u in p2), p2)
 check("sitemap URLs on other hosts ignored", W.pick_pages("https://x.ae", thin, 10, "partner", more=["https://evil.com/services"])[0] == [] or all("evil" not in u for u in W.pick_pages("https://x.ae", thin, 10, "partner", more=["https://evil.com/services"])[0]))
+
+# --- later fixes
+import asyncio, os, tempfile, httpx
+os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
+m2 = L._map("partner", {"secondary_types": ["Other", "Not a technology partner", "Cloud, hosting & data centre", "Cybersecurity & MSSP"]})
+check("secondary types drop Other / Not a partner", m2["enr_p_secondary_types"] == ["Cloud, hosting & data centre", "Cybersecurity & MSSP"], m2["enr_p_secondary_types"])
+check("capability prompt bans guessing", "never write \"implied\"" in L.PROMPTS["partner"])
+check("version bumped again", L.TAXONOMY_VERSION == "t5")
+
+def timeout_handler(request): raise httpx.ReadTimeout("slow site", request=request)
+async def t_crawl():
+    c = httpx.AsyncClient(transport=httpx.MockTransport(timeout_handler))
+    r = await W.crawl(["https://slow.ae"], c)
+    await c.aclose()
+    return r
+r = asyncio.run(t_crawl())
+check("hanging site becomes a failed page, not a server error", r and r[0]["success"] is False and r[0]["error"] == "crawl timed out", r)
+
+from app import jobs
+from app.steps.web_step import CrawlServerError
+cols = jobs.job_columns({"steps": ["web", "llm"], "focus": "partner"})
+check("model column is in the output", cols.count("enr_llm_model") == 1, cols[-3:])
+check("no model column when LLM is off", "enr_llm_model" not in jobs.job_columns({"steps": ["web"]}))
+
+async def t_dropped_row():
+    job = jobs.create_job("t", b"name,domain\nAveva,avevaselect.com\nOk,ok.ae\n", {"steps": ["web"], "domain_column": "domain"})
+    real = jobs.process_row
+    async def fake(j, i):
+        if i == 0: raise CrawlServerError("crawl4ai server error 500")
+        return {"enr_domain": j.domains[i], "enr_status": "ok", "enr_errors": "", "enr_enriched_at": ""}
+    jobs.process_row = fake
+    try:
+        await jobs.run_job(job)
+    finally:
+        jobs.process_row = real
+    return job
+job = asyncio.run(t_dropped_row())
+check("a crawl-server failure leaves an error row, not a blank one", job.results.get(0, {}).get("enr_status") == "error" and "crawl server" in job.results[0]["enr_errors"], job.results)
+check("other rows unaffected", job.results.get(1, {}).get("enr_status") == "ok")
 
 print("FAILED" if FAIL else "ALL PASSED", FAIL)
 sys.exit(1 if FAIL else 0)

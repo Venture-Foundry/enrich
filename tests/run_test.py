@@ -161,7 +161,7 @@ async def main_test():
         r2 = parse((await c.get(f"/api/jobs/{j2['id']}/download")).text)
         check("focus job outputs partner columns, not the short summary", "enr_p_summary" in r2[0] and "enr_llm_one_liner" not in r2[0])
         check("focus job: partner profile filled", r2[0]["enr_p_summary"] == "Hotel group" and r2[0]["enr_p_technologies"] == "Opera PMS", (r2[0]["enr_p_summary"], r2[0]["enr_p_technologies"]))
-        check("focus crawl cached separately from basic crawl", "web_partner" in (await c.get("/api/config")).json()["cache"])
+        check("focus crawl cached separately from basic crawl", "web_partner_v2" in (await c.get("/api/config")).json()["cache"])
 
         print("validation + error paths")
         r = await c.post("/api/jobs", files={"file": ("s.csv", sample)}, data={"options": json.dumps({"steps": []})})
