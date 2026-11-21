@@ -9,7 +9,7 @@ pages from the end, and every page repeats its menu, footer and link URLs. fit_t
 import re
 
 HEADER = re.compile(r"(?m)^## [\w\- ]+ \(https?://[^\n]*\)[ \t]*$")
-_IMG = re.compile(r"!\[[^\]]*\]\((?:[^()\s]|\([^)]*\))*(?:\s+\"[^\"]*\")?\)")
+_IMG = re.compile(r"!\[([^\]]*)\]\((?:[^()\s]|\([^)]*\))*(?:\s+\"[^\"]*\")?\)")
 _LINK = re.compile(r"\[([^\]]*)\]\((?:[^()\s]|\([^)]*\))*(?:\s+\"[^\"]*\")?\)")
 _BARE_URL = re.compile(r"https?://\S+")
 
@@ -28,8 +28,19 @@ def split_pages(md: str):
     return pages
 
 
+_GENERIC_ALT = re.compile(r"^(image|img|photo|picture|logo|icon|banner|slider?|arrow|background|bg|thumbnail|placeholder|screenshot|cover|hero|avatar|bullet|star|play|close|menu|search|facebook|twitter|instagram|linkedin|youtube|whatsapp|image\s*\d*|logo\s*\d*)$", re.I)
+
+
+def _alt(m):
+    """Keep an image's alt text when it is a real name (partner and client logos are often images with only the name as alt text)."""
+    alt = " ".join(m.group(1).split())
+    if not (2 <= len(alt) <= 60) or _GENERIC_ALT.match(alt) or re.search(r"\.(png|jpe?g|svg|webp|gif)\b|[_/\\]|^\d+$", alt, re.I):
+        return ""
+    return alt
+
+
 def _clean_line(line: str) -> str:
-    line = _IMG.sub("", line)
+    line = _IMG.sub(_alt, line)
     line = _LINK.sub(lambda m: m.group(1).strip(), line)
     line = _BARE_URL.sub("", line)
     return re.sub(r"[ \t]+", " ", line).strip()
