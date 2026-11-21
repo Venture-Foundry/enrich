@@ -4,7 +4,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from . import cache, jobs, settings
 from .steps import llm_step
-from .steps import isvs as isvs_mod, packs as packs_mod, web_step
+from .steps import isvs as isvs_mod, packs as packs_mod, web_step, textfit
 
 app = FastAPI(title="Enrichment Portal")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -142,7 +142,7 @@ async def download(jid: str):
                     headers={"Content-Disposition": f'attachment; filename="{base}_enriched{suffix}.csv"'})
 
 @app.get("/api/text/{domain}")
-async def site_text(domain: str, focus: str = ""):
+async def site_text(domain: str, focus: str = "", limit: int = 0):
     """The crawled site text kept in the cache for a domain (so other tools, e.g. Atlas, can re-read the source without re-crawling)."""
     if focus not in ("", "partner", "customer"):
         raise HTTPException(400, "focus must be blank, partner or customer")
@@ -151,6 +151,8 @@ async def site_text(domain: str, focus: str = ""):
     if not p:
         raise HTTPException(404, f"No cached crawl for {domain} ({key})")
     md = p.get("_md") or ""
+    if limit > 0:  # the best excerpt of at most `limit` characters: de-duplicated and shared across pages (see steps/textfit.py)
+        md = textfit.fit_text(md, min(limit, 200000))
     return {"domain": domain.lower(), "focus": focus, "chars": len(md), "markdown": md}
 
 @app.post("/api/cache/clear")
