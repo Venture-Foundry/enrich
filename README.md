@@ -1,0 +1,51 @@
+# Enrichment Portal
+
+Upload a CSV of companies, pick enrichment steps, download a new CSV with extra `enr_*` columns.
+Built for the Apollo UAE list (domain-keyed), crawl4ai for website crawling, no LLM required.
+
+## Run it (next to your crawl4ai)
+```bash
+cp .env.example .env        # set CRAWL4AI_URL (example value is http://192.168.210.10:11235)
+docker compose up -d --build
+# open http://<this-host>:8080
+```
+On Unraid: run `docker compose` from a terminal, or add a container built from this folder.
+The header pill shows whether crawl4ai is reachable; **Test crawl** does a real one-page crawl (the crawl4ai box needs internet for that).
+If you expose the portal through a tunnel, set `PORTAL_USER` / `PORTAL_PASSWORD` in `.env`.
+
+## Using it
+1. Drop a CSV (any file with a domain or website column; the Apollo export works as-is).
+2. Pick steps. For a test list use **first N rows** (e.g. 25).
+3. Start, watch progress, download. The CSV can be downloaded at any time (partial until finished).
+4. Check the output, tune, then run the full file. Cached lookups (30 days) make re-runs near-instant;
+   tick **Ignore cache** to re-fetch.
+
+## What each step adds (all columns are prefixed `enr_`)
+| Step | Needs | Adds |
+|---|---|---|
+| DNS footprint | DNS only | mail provider (M365 / Google / gateways), M365 evidence, Teams/SIP DNS evidence (CentrePal), SPF includes, DMARC policy, DNS host, SaaS vendors revealed by TXT verification records |
+| M365 tenant lookup | outbound HTTPS to login.microsoftonline.com | has tenant, managed/federated, tenant ID |
+| Website crawl | crawl4ai | title, description, language, CMS/e-commerce platform, tech stack (chat, CRM, contact-centre, analytics, payments, ATS), emails, phones, WhatsApp, P.O. Box, social URLs, careers page + ATS, emirates mentioned/HQ guess, industry guess + confidence |
+| ISV signal packs | the steps above | `enr_pack_<isv>_score` and `_hits` from `config/packs.json` (starter packs: centrepal, pulpoar; edit freely) |
+| LLM summary (optional) | LLM_* in `.env` | one-liner, offerings, sector, B2B/B2C, HQ emirate, named people |
+
+Status per row: `ok`, `partial` (a step failed, or site unreachable/blocked), `error`, `no_domain` (row passed through untouched).
+
+## Do you need an LLM?
+Not for this first pass: DNS, tech detection, contacts, careers and a keyword-based industry guess are all rule-based.
+An LLM helps with: a reliable one-line "what they do", cleaner industry labels, named leadership, and ISV-fit reasoning.
+Recommended: keep it off for the full list and enable it only for shortlisted rows (the step has a max-rows cap and an
+"only rows where column equals..." filter, e.g. tier = Platinum/Gold). It speaks the OpenAI chat-completions API, so OpenRouter,
+Ollama or a hosted model all work. About 9k characters of crawled text per company are sent.
+
+## Notes and limits
+* Rows with no domain (450 in the Apollo file) are not enriched; they need a domain-discovery step first.
+* Industry/emirate guesses are heuristics from website text, labelled with a confidence; treat them as a first filter.
+* Crawling is modest by default (3 concurrent crawl4ai requests, up to 4 extra pages per site). Adjust with `CRAWL_CONCURRENCY`.
+* DNS runs from the container. If lookups time out, set `DNS_SERVERS=1.1.1.1,8.8.8.8`.
+* If your crawl4ai version rejects the config objects, the portal retries once with a bare `{"urls": [...]}` payload; you can also
+  override `CRAWL4AI_BROWSER_CONFIG` / `CRAWL4AI_CRAWLER_CONFIG` (JSON) in `.env`.
+* Data lives in `./data` (cache.db, jobs/<id>/input.csv, results.jsonl, enriched.csv).
+
+## Tests
+`python -m tests.run_test` runs 50+ checks against a mock crawl4ai (`pip install -r requirements.txt` first).

@@ -1,0 +1,15 @@
+{
+  "_about": "Per-ISV signal packs. Score = keyword hits (capped at 3 per keyword) x weight + tech matches x weight + DNS/field rules. Edit freely; no rebuild needed (restart the container). These are STARTER examples - refine with each ISV's real ICP.",
+  "centrepal": {
+    "label": "CentrePal (Teams-native contact centre)",
+    "keywords": {"contact centre": 3, "contact center": 3, "call centre": 3, "call center": 3, "customer service": 1, "customer support": 1, "helpline": 2, "hotline": 2, "ivr": 3, "omnichannel": 2, "24/7 support": 1, "toll free": 1, "customer care": 2},
+    "tech": {"Genesys": 4, "Five9": 3, "NICE CXone": 3, "Avaya": 3, "Twilio": 2, "RingCentral": 2, "8x8": 2, "Microsoft Dynamics 365": 2, "Zendesk": 1, "Freshchat/Freshdesk": 1},
+    "fields": {"enr_teams_sip_dns": 4, "enr_m365_tenant": 3, "enr_mx_provider~Microsoft": 2, "enr_m365_evidence": 1}
+  },
+  "pulpoar": {
+    "label": "PulpoAR (AR virtual try-on)",
+    "keywords": {"eyewear": 3, "sunglasses": 3, "jewellery": 3, "jewelry": 3, "cosmetics": 3, "makeup": 3, "beauty": 2, "skincare": 2, "fragrance": 2, "watches": 2, "fashion": 1, "add to cart": 1, "online store": 1},
+    "tech": {"Shopify": 3, "Magento": 2, "WooCommerce": 2, "Salesforce Commerce Cloud": 2, "BigCommerce": 2},
+    "fields": {}
+  }
+}

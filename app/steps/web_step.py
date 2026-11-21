@@ -1,0 +1,280 @@
+"""Website enrichment through crawl4ai's /crawl endpoint + rule-based extraction (no LLM)."""
+import asyncio, json, re
+from urllib.parse import urljoin, urlparse
+import httpx
+from bs4 import BeautifulSoup
+from .. import settings
+from . import tech, industry
+
+COLUMNS = [
+    "enr_web_status", "enr_web_final_url", "enr_site_title", "enr_site_description", "enr_site_language", "enr_arabic_site",
+    "enr_site_cms", "enr_ecommerce_platform", "enr_tech_stack", "enr_chat_support_tools", "enr_crm_marketing_tools",
+    "enr_contact_centre_tech", "enr_analytics_ads", "enr_hosting_cdn", "enr_payments", "enr_ats",
+    "enr_has_careers_page", "enr_careers_url", "enr_emails", "enr_phones", "enr_whatsapp", "enr_po_box",
+    "enr_linkedin_url", "enr_twitter_url", "enr_facebook_url", "enr_instagram_url", "enr_youtube_url",
+    "enr_emirates_mentioned", "enr_hq_emirate_guess", "enr_industry_naics", "enr_industry_guess",
+    "enr_industry_runner_up", "enr_industry_confidence", "enr_pages_crawled", "enr_text_chars",
+]
+
+_sem = None
+_minimal_mode = False  # flips to True if the server rejects our config objects (version drift)
+
+def _semaphore():
+    global _sem
+    if _sem is None:
+        _sem = asyncio.Semaphore(settings.CRAWL_CONCURRENCY)
+    return _sem
+
+class CrawlServerError(Exception):
+    """crawl4ai unreachable / misbehaving (not a per-site problem)."""
+
+def _headers():
+    h = {"Content-Type": "application/json"}
+    if settings.CRAWL4AI_TOKEN:
+        h["Authorization"] = f"Bearer {settings.CRAWL4AI_TOKEN}"
+    return h
+
+def _payload(urls, minimal=False):
+    if minimal:
+        return {"urls": urls}
+    browser = json.loads(settings.CRAWL4AI_BROWSER_CONFIG) if settings.CRAWL4AI_BROWSER_CONFIG else \
+        {"type": "BrowserConfig", "params": {"headless": True}}
+    crawler = json.loads(settings.CRAWL4AI_CRAWLER_CONFIG) if settings.CRAWL4AI_CRAWLER_CONFIG else \
+        {"type": "CrawlerRunConfig", "params": {"cache_mode": "bypass", "page_timeout": settings.CRAWL_PAGE_TIMEOUT_MS}}
+    return {"urls": urls, "browser_config": browser, "crawler_config": crawler}
+
+def _normalize(r: dict) -> dict:
+    md = r.get("markdown")
+    if isinstance(md, dict):
+        md = md.get("raw_markdown") or md.get("markdown_with_citations") or ""
+    return {
+        "url": r.get("url", ""), "final_url": r.get("redirected_url") or r.get("url", ""),
+        "success": bool(r.get("success")), "status": r.get("status_code"),
+        "html": r.get("html") or r.get("cleaned_html") or "", "markdown": md or "",
+        "links": r.get("links") or {}, "error": r.get("error_message") or "",
+    }
+
+async def crawl(urls, client=None) -> list:
+    """POST to crawl4ai; returns normalized result dicts in request order (best effort)."""
+    global _minimal_mode
+    own = client is None
+    client = client or httpx.AsyncClient(timeout=settings.CRAWL_HTTP_TIMEOUT_S)
+    try:
+        async with _semaphore():
+            for attempt in (0, 1):
+                try:
+                    r = await client.post(f"{settings.CRAWL4AI_URL}/crawl", json=_payload(urls, _minimal_mode), headers=_headers())
+                except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+                    raise CrawlServerError(f"cannot reach crawl4ai at {settings.CRAWL4AI_URL}: {type(e).__name__}")
+                except httpx.HTTPError as e:
+                    raise CrawlServerError(f"crawl4ai request failed: {type(e).__name__}")
+                if r.status_code in (400, 422) and not _minimal_mode and attempt == 0:
+                    _minimal_mode = True  # retry once with the bare {"urls": [...]} payload
+                    continue
+                break
+        if r.status_code in (401, 403):
+            raise CrawlServerError("crawl4ai rejected the request (auth) - set CRAWL4AI_TOKEN")
+        if r.status_code >= 500:
+            raise CrawlServerError(f"crawl4ai server error {r.status_code}")
+        if r.status_code >= 400:
+            raise CrawlServerError(f"crawl4ai returned {r.status_code}: {r.text[:200]}")
+        data = r.json()
+        raw = data.get("results")
+        if raw is None and "result" in data:
+            raw = [data["result"]]
+        return [_normalize(x) for x in (raw or [])]
+    finally:
+        if own:
+            await client.aclose()
+
+BLOCK_MARKERS = ("just a moment", "attention required", "access denied", "enable javascript and cookies", "verify you are human",
+                 "captcha", "request blocked", "403 forbidden", "are you a robot")
+
+def _looks_blocked(html, text):
+    if len(text) > 1500:
+        return False
+    low = (html[:6000] + " " + text).lower()
+    return any(m in low for m in BLOCK_MARKERS)
+
+LINK_CATS = [
+    ("contact", re.compile(r"contact|reach-us|get-in-touch|enquir|اتصل|تواصل", re.I)),
+    ("about", re.compile(r"about|who-we-are|our-story|company-profile|من-نحن", re.I)),
+    ("careers", re.compile(r"career|jobs|vacanc|join-us|work-with-us|recruit|opportunit|وظائف", re.I)),
+    ("team", re.compile(r"leadership|management|our-team|board|people|meet-the", re.I)),
+]
+
+def _same_site(host_a, host_b):
+    strip = lambda h: (h or "").lower().removeprefix("www.")
+    return strip(host_a) == strip(host_b)
+
+def pick_pages(home_url, links, extra):
+    """Choose up to `extra` internal pages (contact, about, careers, team) and report the careers link."""
+    base_host = urlparse(home_url).hostname
+    cands = []
+    internal = (links or {}).get("internal") or []
+    external = (links or {}).get("external") or []
+    for item in list(internal) + list(external):
+        href = (item.get("href") if isinstance(item, dict) else str(item)) or ""
+        text = (item.get("text") if isinstance(item, dict) else "") or ""
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        absu = urljoin(home_url, href)
+        if not _same_site(urlparse(absu).hostname, base_host):
+            continue
+        cands.append((absu.split("#")[0], f"{urlparse(absu).path} {text}"))
+    chosen, careers_url = [], ""
+    for name, rx in LINK_CATS:
+        for u, label in cands:
+            if rx.search(label) and u.rstrip("/") != home_url.rstrip("/"):
+                if name == "careers" and not careers_url:
+                    careers_url = u
+                if u not in [c[1] for c in chosen] and len(chosen) < extra:
+                    chosen.append((name, u))
+                break
+    return [u for _, u in chosen], careers_url
+
+EMAIL_RX = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
+JUNK_EMAIL = re.compile(r"\.(png|jpe?g|gif|svg|webp|css|js|woff2?)$|sentry|example\.|yourdomain|wixpress|domain\.com|email\.com|@2x", re.I)
+PHONE_RX = re.compile(r"(?:\+|00)\s?971[\s\-\.\(\)]*\d(?:[\s\-\.\(\)]*\d){7,8}|\b800[\s\-]?\d{2,7}\b|\b0[2-9][\s\-]?\d{3}[\s\-]?\d{4}\b|\b05\d[\s\-]?\d{3}[\s\-]?\d{4}\b")
+POBOX_RX = re.compile(r"p\.?\s?o\.?\s?box[:\s#\.]*\d{2,7}", re.I)
+EMIRATES = [("Dubai", r"dubai"), ("Abu Dhabi", r"abu\s?dhabi"), ("Sharjah", r"sharjah"), ("Ajman", r"ajman"),
+            ("Ras Al Khaimah", r"ras\s?al\s?khaimah|\brak\b"), ("Fujairah", r"fujairah"), ("Umm Al Quwain", r"umm\s?al\s?quwain|\buaq\b"),
+            ("Al Ain", r"\bal\s?ain\b")]
+SOCIALS = {
+    "enr_linkedin_url": re.compile(r"linkedin\.com/(company|school)/[^/?#\s]+", re.I),
+    "enr_twitter_url": re.compile(r"(?:twitter|x)\.com/(?!share|intent|home|search)[A-Za-z0-9_]{2,}", re.I),
+    "enr_facebook_url": re.compile(r"facebook\.com/(?!sharer|share|plugins|tr\?|dialog)[^/?#\s]{2,}", re.I),
+    "enr_instagram_url": re.compile(r"instagram\.com/(?!p/|explore|accounts)[A-Za-z0-9_.]{2,}", re.I),
+    "enr_youtube_url": re.compile(r"youtube\.com/(?:channel|c|user|@)[^\s\"'?#]*", re.I),
+}
+
+def _clean_phone(p):
+    p = re.sub(r"[^\d+]", "", p)
+    if p.startswith("00971"):
+        p = "+" + p[2:]
+    return p
+
+def extract(domain, pages, careers_url="", packs=None):
+    """pages: list of dicts(name,url,html,markdown,links). Returns (columns dict, text_lower, markdown_excerpt)."""
+    out = {c: "" for c in COLUMNS}
+    home = pages[0]
+    all_html, texts, md_parts = [], [], []
+    soups = []
+    for i, p in enumerate(pages):
+        html = p["html"] or ""
+        soup = BeautifulSoup(html, "lxml") if html else BeautifulSoup("", "lxml")
+        soups.append(soup)
+        all_html.append(html.lower())
+        s2 = BeautifulSoup(html, "lxml") if html else soup
+        for t in s2(["script", "style", "noscript", "svg"]):
+            t.decompose()
+        texts.append(re.sub(r"\s+", " ", s2.get_text(" ", strip=True)))
+        limit = 6000 if i == 0 else 3500
+        if p["markdown"]:
+            md_parts.append(f"## {p.get('name','page')} ({p['url']})\n" + p["markdown"][:limit])
+    hs = soups[0]
+    title = (hs.title.string or "").strip() if hs.title and hs.title.string else ""
+    def meta(*names):
+        for n in names:
+            tag = hs.find("meta", attrs={"name": n}) or hs.find("meta", attrs={"property": n})
+            if tag and tag.get("content"):
+                return tag["content"].strip()
+        return ""
+    out["enr_site_title"] = (meta("og:site_name") + " | " if meta("og:site_name") and meta("og:site_name") not in title else "") + title
+    out["enr_site_description"] = meta("description", "og:description")[:400]
+    htag = hs.find("html")
+    out["enr_site_language"] = (htag.get("lang") if htag and htag.get("lang") else "")
+    full_text = " ".join(texts)
+    arabic = len(re.findall(r"[؀-ۿ]", full_text))
+    out["enr_arabic_site"] = bool(arabic and arabic / max(len(full_text), 1) > 0.05) or bool(hs.find("link", attrs={"hreflang": re.compile(r"^ar", re.I)}))
+    blob = " ".join(all_html)
+    found, cats = tech.detect(blob)
+    out["enr_tech_stack"] = found
+    gen = meta("generator")
+    out["enr_site_cms"] = (cats.get("CMS") or [gen])[0] if (cats.get("CMS") or gen) else ""
+    out["enr_ecommerce_platform"] = (cats.get("E-commerce") or [""])[0]
+    out["enr_chat_support_tools"] = cats.get("Chat", []) + cats.get("Support", []) + cats.get("Messaging", [])
+    out["enr_crm_marketing_tools"] = cats.get("CRM", []) + cats.get("CRM/Business suite", []) + cats.get("Marketing automation", [])
+    out["enr_contact_centre_tech"] = cats.get("Contact centre", []) + cats.get("Telephony", [])
+    out["enr_analytics_ads"] = cats.get("Analytics", []) + cats.get("Advertising", [])
+    out["enr_hosting_cdn"] = cats.get("CDN/Hosting", [])
+    out["enr_payments"] = cats.get("Payments", [])
+    out["enr_ats"] = cats.get("ATS", [])
+    out["enr_careers_url"] = careers_url
+    out["enr_has_careers_page"] = bool(careers_url or cats.get("ATS"))
+    # contacts
+    mails, seen = [], set()
+    for src in texts + [a["href"][7:].split("?")[0] for s in soups for a in s.find_all("a", href=True) if a["href"].lower().startswith("mailto:")]:
+        for m in EMAIL_RX.findall(src):
+            m = m.lower().strip(".")
+            if m not in seen and not JUNK_EMAIL.search(m):
+                seen.add(m); mails.append(m)
+    own = [m for m in mails if m.endswith("@" + domain) or m.split("@")[1].endswith("." + domain)]
+    out["enr_emails"] = (own + [m for m in mails if m not in own])[:6]
+    phones, pseen = [], set()
+    tel = [a["href"][4:] for s in soups for a in s.find_all("a", href=True) if a["href"].lower().startswith("tel:")]
+    for src in tel + texts:
+        for m in PHONE_RX.findall(src) if src not in tel else [src]:
+            cp = _clean_phone(m)
+            if 7 <= len(cp) <= 16 and cp not in pseen:
+                pseen.add(cp); phones.append(cp)
+    out["enr_phones"] = phones[:6]
+    out["enr_whatsapp"] = bool(re.search(r"wa\.me/|api\.whatsapp\.com|wa\.link", blob))
+    pb = POBOX_RX.search(full_text)
+    out["enr_po_box"] = re.sub(r"\s+", " ", pb.group(0)) if pb else ""
+    hrefs = [a["href"] for s in soups for a in s.find_all("a", href=True)]
+    for col, rx in SOCIALS.items():
+        for h in hrefs:
+            m = rx.search(h)
+            if m and "share" not in h.lower():
+                out[col] = ("https://www." + m.group(0)) if not h.startswith("http") else h.split("?")[0]
+                break
+    # emirates: contact page weighted x3
+    counts = {}
+    for i, t in enumerate(texts):
+        w = 3 if pages[i].get("name") == "contact" else 1
+        tl = t.lower()
+        for name, rx in EMIRATES:
+            n = len(re.findall(rx, tl))
+            if n:
+                counts[name] = counts.get(name, 0) + n * w
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    out["enr_emirates_mentioned"] = [n for n, _ in ranked]
+    out["enr_hq_emirate_guess"] = ranked[0][0] if ranked else ""
+    h_text = " ".join(h.get_text(" ", strip=True) for s in soups[:1] for h in s.find_all(["h1", "h2", "h3"]))
+    top, ru, conf = industry.guess([(out["enr_site_title"] + " " + out["enr_site_description"], 3), (h_text, 2), (full_text[:20000], 1)])
+    out["enr_industry_guess"], out["enr_industry_runner_up"], out["enr_industry_confidence"] = top, ru, conf
+    out["enr_pages_crawled"] = len(pages)
+    out["enr_text_chars"] = len(full_text)
+    return out, full_text.lower()[:60000], "\n\n".join(md_parts)[:14000]
+
+async def run(domain: str, extra_pages: int = 3, client=None) -> dict:
+    home = None
+    last_err = ""
+    for url in (f"https://{domain}", f"https://www.{domain}", f"http://{domain}"):
+        res = await crawl([url], client)
+        r = res[0] if res else None
+        if r and r["success"] and len(r["html"]) > 20 and (r["status"] or 200) < 400:
+            home = r
+            break
+        last_err = (r["error"] if r else "") or (f"status {r['status']}" if r and r["status"] else "no result")
+    out = {c: "" for c in COLUMNS}
+    if not home:
+        out["enr_web_status"] = "unreachable"
+        out["_error"] = f"website unreachable: {last_err[:120]}"
+        return out
+    final = home["final_url"] or home["url"]
+    pages = [{**home, "name": "home"}]
+    urls, careers_url = pick_pages(final, home["links"], max(0, min(extra_pages, 4)))
+    if urls:
+        extra = await crawl(urls, client)
+        for u, r in zip(urls, extra):
+            if r["success"] and r["html"]:
+                nm = next((n for n, rx in LINK_CATS if rx.search(urlparse(u).path)), "page")
+                pages.append({**r, "name": nm})
+    cols, text, md = extract(domain, pages, careers_url)
+    cols["enr_web_final_url"] = final
+    cols["enr_web_status"] = "blocked" if _looks_blocked(home["html"], text) else "ok"
+    cols["_text"] = text
+    cols["_md"] = md
+    return cols

@@ -1,0 +1,9 @@
+employee_band,name,domain,website_url,naics_codes,already_saved_in_apollo
+201-500,Acme Hotels,acmehotels.ae,http://www.acmehotels.ae,721110,no
+201-500,CallCentreCo,callcentreco.ae,http://www.callcentreco.ae,561422,no
+501-1000,Fresh Beauty,freshbeauty.ae,http://www.freshbeauty.ae,456120,yes
+501-1000,Cloudflare-protected,blocked.ae,http://blocked.ae,,no
+1001-2000,Dead site,down.ae,http://down.ae,,no
+201-500,Generic Soft,genericsoft.ae,,541511,no
+201-500,No website at all,,,,no
+201-500,Acme Hotels duplicate,acmehotels.ae,,721110,no

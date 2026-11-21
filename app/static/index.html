@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enrichment Portal</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b2430; --mute:#6b7685; --line:#e2e6ec; --accent:#1f5eff; --ok:#14804a; --warn:#b26a00; --bad:#c0262d; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:#fff; border-bottom:1px solid var(--line); padding:14px 24px; display:flex; align-items:center; gap:16px; }
+  header h1 { font-size:17px; margin:0; font-weight:650; }
+  .pill { font-size:12px; padding:3px 10px; border-radius:99px; background:#eef1f5; color:var(--mute); }
+  .pill.ok { background:#e5f5ec; color:var(--ok); } .pill.bad { background:#fdeaea; color:var(--bad); }
+  main { max-width:1100px; margin:20px auto; padding:0 16px 60px; display:grid; gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 20px; }
+  .card h2 { font-size:14px; margin:0 0 12px; text-transform:uppercase; letter-spacing:.04em; color:var(--mute); }
+  .drop { border:2px dashed #c9d1dc; border-radius:10px; padding:26px; text-align:center; color:var(--mute); cursor:pointer; }
+  .drop.over { border-color:var(--accent); background:#f0f5ff; }
+  table { border-collapse:collapse; width:100%; font-size:12.5px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  th { color:var(--mute); font-weight:600; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:10px 22px; }
+  label.opt { display:flex; gap:8px; align-items:flex-start; }
+  label.opt small { display:block; color:var(--mute); }
+  input[type=number], select, input[type=text] { padding:6px 8px; border:1px solid var(--line); border-radius:6px; font:inherit; width:100%; }
+  button { font:inherit; padding:8px 16px; border-radius:8px; border:1px solid var(--line); background:#fff; cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .bar { height:10px; background:#eef1f5; border-radius:99px; overflow:hidden; } .bar > div { height:100%; background:var(--accent); width:0; transition:width .4s; }
+  .stats { display:flex; flex-wrap:wrap; gap:18px; margin:10px 0; } .stats b { font-size:18px; display:block; } .stats span { color:var(--mute); font-size:12px; }
+  .st-ok { color:var(--ok); } .st-partial { color:var(--warn); } .st-error,.st-no_domain { color:var(--bad); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--mute); } .hide { display:none; }
+  .scroll { overflow-x:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Enrichment Portal</h1>
+  <span id="c4" class="pill">crawl4ai: checking…</span>
+  <button id="testc4" style="padding:3px 10px;font-size:12px">Test crawl</button>
+  <span id="llmpill" class="pill">LLM: off</span>
+  <span style="flex:1"></span>
+  <span class="muted" id="cachecount"></span>
+</header>
+<main>
+  <section class="card">
+    <h2>1 · Upload a CSV</h2>
+    <div class="drop" id="drop">Drop a CSV here, or click to choose one<input id="file" type="file" accept=".csv,text/csv" class="hide"></div>
+    <div id="previewBox" class="hide" style="margin-top:14px">
+      <div class="row"><b id="pvName"></b><span class="muted" id="pvStats"></span></div>
+      <div class="row" style="margin:10px 0"><label>Domain column&nbsp;<select id="domCol" style="width:auto"></select></label>
+        <span class="muted">Rows with no usable domain are passed through untouched (status “no_domain”).</span></div>
+      <div class="scroll"><table id="pvTable"></table></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>2 · Choose enrichment</h2>
+    <div class="grid">
+      <label class="opt"><input type="checkbox" id="s_dns" checked><span><b>DNS footprint</b><small>Mail provider, Microsoft 365 / Teams-SIP evidence, SPF, DMARC, SaaS vendor TXT records. Fast, no crawl4ai.</small></span></label>
+      <label class="opt"><input type="checkbox" id="s_tenant" checked><span><b>Microsoft 365 tenant lookup</b><small>Public Entra ID check: has a tenant? managed or federated? tenant ID.</small></span></label>
+      <label class="opt"><input type="checkbox" id="s_web" checked><span><b>Website crawl (crawl4ai)</b><small>Title, description, tech stack, emails, phones, socials, careers/ATS, emirate, industry guess.</small></span></label>
+      <label class="opt"><input type="checkbox" id="s_packs" checked><span><b>ISV signal packs</b><small>Transparent per-ISV scores built from the data above. Edit in config/packs.json.</small></span></label>
+      <label class="opt" id="llmopt"><input type="checkbox" id="s_llm"><span><b>LLM summary (optional)</b><small id="llmsmall">Needs LLM_BASE_URL / LLM_MODEL in .env.</small></span></label>
+    </div>
+    <div id="packBox" class="row" style="margin-top:12px"></div>
+    <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
+    <div class="grid">
+      <label>Only process the first N rows (0 = all)<input type="number" id="maxRows" value="0" min="0"></label>
+      <label>Extra pages per site (contact/about/careers/team)<input type="number" id="extra" value="3" min="0" max="4"></label>
+      <label>Rows in parallel<input type="number" id="rowc" min="1" max="50"></label>
+      <label class="opt" style="align-self:end"><input type="checkbox" id="force"><span>Ignore cache (re-fetch everything)</span></label>
+    </div>
+    <div id="llmOpts" class="grid hide" style="margin-top:12px">
+      <label>LLM: max rows to summarise<input type="number" id="llmMax" value="25" min="0"></label>
+      <label>LLM: only rows where column<select id="llmCol"><option value="">(any row)</option></select></label>
+      <label>…equals one of (comma-separated)<input type="text" id="llmVals" placeholder="e.g. Platinum, Gold"></label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>3 · Run</h2>
+    <div class="row"><button class="primary" id="start" disabled>Start enrichment</button>
+      <button id="cancel" class="hide">Cancel</button>
+      <button id="dl" class="hide">Download enriched CSV</button>
+      <span id="msg" class="muted"></span></div>
+    <div id="progress" class="hide" style="margin-top:14px">
+      <div class="bar"><div id="barfill"></div></div>
+      <div class="stats" id="stats"></div>
+      <div class="scroll"><table id="recent"></table></div>
+    </div>
+  </section>
+
+  <section class="card"><h2>Previous runs</h2><div class="scroll"><table id="history"></table></div>
+    <div class="row" style="margin-top:10px"><button id="clearCache">Clear cache</button><span class="muted">Cached lookups make re-runs and the full-list run much faster.</span></div></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let cfg = {}, file = null, pv = null, jobId = null, timer = null;
+
+async function loadCfg() {
+  cfg = await (await fetch('/api/config')).json();
+  $('rowc').value = cfg.defaults.row_concurrency;
+  $('llmpill').textContent = cfg.llm_enabled ? 'LLM: ' + cfg.llm_model : 'LLM: off';
+  $('llmpill').className = 'pill' + (cfg.llm_enabled ? ' ok' : '');
+  $('s_llm').disabled = !cfg.llm_enabled;
+  $('llmsmall').textContent = cfg.llm_enabled ? 'Summarises the crawled text for a limited set of rows (see options below).' : 'Needs LLM_BASE_URL / LLM_MODEL in .env — not configured.';
+  $('packBox').innerHTML = Object.entries(cfg.packs).map(([k, v]) => `<label class="opt"><input type="checkbox" class="pk" value="${esc(k)}" checked>${esc(v)}</label>`).join('');
+  const total = Object.values(cfg.cache).reduce((a, b) => a + b, 0);
+  $('cachecount').textContent = total ? `${total} cached lookups` : '';
+}
+async function ping(crawl) {
+  $('c4').textContent = 'crawl4ai: checking…'; $('c4').className = 'pill';
+  try {
+    const h = await (await fetch('/api/health' + (crawl ? '?crawl=true' : ''))).json();
+    if (!h.reachable) { $('c4').textContent = 'crawl4ai: unreachable (' + h.url + ')'; $('c4').className = 'pill bad'; return; }
+    let t = 'crawl4ai: up';
+    if (h.test_crawl) t += h.test_crawl.success ? ' · test crawl OK' : ' · test crawl failed: ' + (h.test_crawl.error || h.test_crawl.status);
+    $('c4').textContent = t; $('c4').className = 'pill ' + (h.test_crawl && !h.test_crawl.success ? 'bad' : 'ok');
+  } catch (e) { $('c4').textContent = 'crawl4ai: error'; $('c4').className = 'pill bad'; }
+}
+function syncOpts() {
+  $('llmOpts').classList.toggle('hide', !$('s_llm').checked);
+  $('packBox').classList.toggle('hide', !$('s_packs').checked);
+}
+['s_llm', 's_packs'].forEach(i => $(i).addEventListener('change', syncOpts));
+
+const drop = $('drop');
+drop.onclick = () => $('file').click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) pick(e.dataTransfer.files[0]); };
+$('file').onchange = e => e.target.files[0] && pick(e.target.files[0]);
+
+async function pick(f) {
+  file = f;
+  const fd = new FormData(); fd.append('file', f);
+  const r = await fetch('/api/preview', { method: 'POST', body: fd });
+  if (!r.ok) { $('msg').textContent = (await r.json()).detail || 'Could not read that file'; return; }
+  pv = await r.json();
+  $('previewBox').classList.remove('hide');
+  $('pvName').textContent = f.name;
+  $('pvStats').textContent = `${pv.rows} rows · ${pv.with_domain} with a usable domain · ${pv.columns.length} columns`;
+  $('domCol').innerHTML = pv.columns.map(c => `<option ${c === pv.domain_column ? 'selected' : ''}>${esc(c)}</option>`).join('');
+  $('llmCol').innerHTML = '<option value="">(any row)</option>' + pv.columns.map(c => `<option>${esc(c)}</option>`).join('');
+  const cols = pv.columns.slice(0, 8);
+  $('pvTable').innerHTML = '<tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>' + pv.sample.map(r => '<tr>' + cols.map(c => `<td title="${esc(r[c])}">${esc(r[c])}</td>`).join('') + '</tr>').join('');
+  $('start').disabled = false;
+  $('msg').textContent = '';
+}
+$('start').onclick = async () => {
+  const steps = ['dns', 'tenant', 'web', 'packs', 'llm'].filter(s => $('s_' + s).checked);
+  if (!steps.length) { $('msg').textContent = 'Select at least one step.'; return; }
+  const opts = { steps, domain_column: $('domCol').value, max_rows: +$('maxRows').value || 0, extra_pages: +$('extra').value, row_concurrency: +$('rowc').value,
+    force: $('force').checked, packs: [...document.querySelectorAll('.pk:checked')].map(x => x.value),
+    llm_max_rows: +$('llmMax').value || 0, llm_filter_column: $('llmCol').value, llm_filter_values: $('llmVals').value };
+  const fd = new FormData(); fd.append('file', file); fd.append('options', JSON.stringify(opts));
+  const r = await fetch('/api/jobs', { method: 'POST', body: fd });
+  const j = await r.json();
+  if (!r.ok) { $('msg').textContent = j.detail || 'Could not start'; return; }
+  watch(j.id);
+};
+function watch(id) {
+  jobId = id; clearInterval(timer);
+  $('progress').classList.remove('hide'); $('dl').classList.remove('hide'); $('cancel').classList.remove('hide');
+  poll(); timer = setInterval(poll, 1500);
+}
+async function poll() {
+  const j = await (await fetch('/api/jobs/' + jobId)).json();
+  const pct = j.total ? Math.round(100 * j.done / j.total) : 0;
+  $('barfill').style.width = pct + '%';
+  $('stats').innerHTML = [['done', `${j.done} / ${j.total}`], ['ok', j.counts.ok], ['partial', j.counts.partial], ['error', j.counts.error], ['no domain', j.counts.no_domain], ['cache hits', j.cache_hits], ['status', j.status]]
+    .map(([k, v]) => `<div><b>${esc(v)}</b><span>${k}</span></div>`).join('');
+  $('msg').textContent = j.message || '';
+  $('recent').innerHTML = '<tr><th>Domain</th><th>Status</th><th>Mail</th><th>M365</th><th>Teams SIP</th><th>Industry (guess)</th><th>Emirate</th><th>Tech</th><th>Notes</th></tr>' +
+    j.recent.map(r => `<tr><td>${esc(r.domain)}</td><td class="st-${esc(r.status)}">${esc(r.status)}</td><td>${esc(r.mail)}</td><td>${esc(r.m365 === true ? 'yes' : r.m365 === false ? 'no' : r.m365)}</td><td>${esc(r.teams_sip === true ? 'yes' : r.teams_sip === false ? 'no' : r.teams_sip)}</td><td>${esc(r.industry)}</td><td>${esc(r.emirate)}</td><td title="${esc((r.tech||[]).join?.(', '))}">${esc((r.tech||[]).join?.(', '))}</td><td title="${esc(r.errors)}">${esc(r.errors)}</td></tr>`).join('');
+  const live = ['queued', 'running'].includes(j.status);
+  $('cancel').classList.toggle('hide', !live);
+  if (!live) { clearInterval(timer); loadHistory(); loadCfg(); }
+}
+$('dl').onclick = () => location.href = `/api/jobs/${jobId}/download`;
+$('cancel').onclick = async () => { await fetch(`/api/jobs/${jobId}/cancel`, { method: 'POST' }); };
+$('testc4').onclick = () => ping(true);
+$('clearCache').onclick = async () => { if (confirm('Clear all cached lookups?')) { await fetch('/api/cache/clear', { method: 'POST' }); loadCfg(); } };
+async function loadHistory() {
+  const js = await (await fetch('/api/jobs')).json();
+  $('history').innerHTML = '<tr><th>Started</th><th>File</th><th>Rows</th><th>Steps</th><th>Status</th><th></th></tr>' + js.map(j =>
+    `<tr><td>${j.created ? new Date(j.created * 1000).toLocaleString() : ''}</td><td>${esc(j.name)}</td><td>${j.done}/${j.total}</td><td>${esc(j.steps.join(', '))}</td><td>${esc(j.status)}</td>
+     <td><a href="/api/jobs/${j.id}/download">download</a> · <a href="#" data-watch="${j.id}">view</a> · <a href="#" data-rerun="${j.id}">re-run</a></td></tr>`).join('');
+  document.querySelectorAll('[data-watch]').forEach(a => a.onclick = e => { e.preventDefault(); watch(a.dataset.watch); });
+  document.querySelectorAll('[data-rerun]').forEach(a => a.onclick = async e => { e.preventDefault(); const r = await (await fetch(`/api/jobs/${a.dataset.rerun}/rerun`, { method: 'POST' })).json(); watch(r.id); });
+}
+loadCfg().then(() => { syncOpts(); ping(false); loadHistory(); });
+</script>
+</body>
+</html>
