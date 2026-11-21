@@ -57,7 +57,7 @@ os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 m2 = L._map("partner", {"secondary_types": ["Other", "Not a technology partner", "Cloud, hosting & data centre", "Cybersecurity & MSSP"]})
 check("secondary types drop Other / Not a partner", m2["enr_p_secondary_types"] == ["Cloud, hosting & data centre", "Cybersecurity & MSSP"], m2["enr_p_secondary_types"])
 check("capability prompt bans guessing", "never write \"implied\"" in L.PROMPTS["partner"])
-check("version bumped again", L.TAXONOMY_VERSION == "t5")
+check("version bumped again", L.TAXONOMY_VERSION == "t6")
 
 def timeout_handler(request): raise httpx.ReadTimeout("slow site", request=request)
 async def t_crawl():
@@ -89,6 +89,16 @@ async def t_dropped_row():
 job = asyncio.run(t_dropped_row())
 check("a crawl-server failure leaves an error row, not a blank one", job.results.get(0, {}).get("enr_status") == "error" and "crawl server" in job.results[0]["enr_errors"], job.results)
 check("other rows unaffected", job.results.get(1, {}).get("enr_status") == "ok")
+
+# --- alt text of logos, hedging ban
+from app.steps import textfit
+md = "## home (https://x.ae/)\n[![Nutanix](https://x.ae/n.png)](https://x.ae/nutanix)\n![logo](a.png)\n![](b.png)\n![img_0012](c.png)\n![Fortinet Partner](https://x.ae/f.svg)\nWelcome"
+t = textfit.fit_text(md, 5000)
+check("logo alt text is kept", "Nutanix" in t and "Fortinet Partner" in t, t)
+check("generic and file-like alt text dropped", "logo" not in t.lower().replace("logo wall", "") and "img_0012" not in t and "a.png" not in t, t)
+check("no URLs leak", "http" not in t.replace("## home (", "").split(")")[0] or "x.ae/n.png" not in t, t)
+check("hedging banned in rules", "never write \"implied\"" in L.RULES)
+check("secondary types need a real practice", "single mention of a service is not enough" in L.PROMPTS["partner"])
 
 print("FAILED" if FAIL else "ALL PASSED", FAIL)
 sys.exit(1 if FAIL else 0)
