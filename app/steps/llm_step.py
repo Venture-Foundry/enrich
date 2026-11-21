@@ -28,7 +28,7 @@ _transport = None
 
 # Fixed sector list with a one-line definition each, so the model picks against what a sector INCLUDES, not just its name.
 # Bump TAXONOMY_VERSION whenever this changes: it is part of the cache key, so old answers are not replayed.
-TAXONOMY_VERSION = "t6"  # t3: site text is now de-duplicated and shared across pages before it is sent
+TAXONOMY_VERSION = "t7"  # t3: site text is now de-duplicated and shared across pages before it is sent
 SECTOR_DEFS = {
     "Banking & financial services": "banks, lenders, exchange houses, payments, fintech, crypto/Web3 wallets and exchanges, brokers",
     "Insurance": "insurers, brokers, takaful, claims services",
@@ -147,7 +147,7 @@ partner_type_evidence (one sentence: what on the site shows this type; for "Not 
 secondary_types (list of up to 2 more values from the same list, ONLY for a distinct, substantial business line with its own named practice or service pages; a single mention of a service is not enough; [] otherwise),
 service_lines (list: each distinct service or practice named, e.g. "Managed SOC", "ERP implementation", "Cloud migration"),
 technologies (list: every product, platform, vendor technology or tool they say they implement, resell, support or build on),
-vendor_partnerships (list of objects {vendor, status, evidence}: EVERY vendor, brand or technology partner named in the text, including names shown on logo walls and partner pages; vendor alliances, e.g. Microsoft, AWS, Google Cloud, Salesforce, SAP, Oracle, Cisco, Dell, HP, Fortinet; status = tier/designation exactly as written such as "Gold Partner", "Solutions Partner", "reseller", or ""),
+vendor_partnerships (list of objects {vendor, status, evidence}: EVERY vendor, brand or technology partner the company resells, distributes, implements or holds an alliance with, including names on vendor and partner pages (logos under "clients", "trusted by" or "customers" are named_customers, never vendor partnerships); vendor alliances, e.g. Microsoft, AWS, Google Cloud, Salesforce, SAP, Oracle, Cisco, Dell, HP, Fortinet; status = tier/designation exactly as written such as "Gold Partner", "Solutions Partner", "reseller", or ""),
 microsoft_azure_signals (list of short statements about Microsoft/Azure: CSP, Solutions Partner designations, Marketplace listings, co-sell, Azure practice, M365/Dynamics/Power Platform work),
 own_products_ip (list: their own products, platforms, accelerators or IP),
 industries_served (list), named_customers (list of customer/brand names they show: logos, case studies, testimonials),
@@ -194,6 +194,21 @@ Website text:
 def _s(v):
     return v if isinstance(v, str) else ("" if v is None else str(v))
 
+_HEDGE = re.compile(r"\b(implied|implies|likely|appears?|not (?:explicitly )?(?:specified|stated)|unknown|unclear)\b", re.I)
+
+def _unhedge(text):
+    """Structured fields hold stated facts only: cut parentheses and clauses that carry a guess ('(implied)', 'remote work implied but not stated').
+    Doubts are allowed in the summary, which does not go through here."""
+    t = _s(text).strip()
+    while _HEDGE.search(t):
+        t2 = re.sub(r"\s*\([^()]*\)", lambda m: "" if _HEDGE.search(m.group(0)) else m.group(0), t)
+        if t2 == t:
+            break
+        t = t2
+    if _HEDGE.search(t):
+        t = " ".join(c for c in re.split(r"(?<=[,;])\s*", t) if not _HEDGE.search(c))
+    return t.strip(" ,;.-")
+
 def _list(v):
     if v is None or v == "":
         return []
@@ -201,14 +216,19 @@ def _list(v):
         out = []
         for x in v:
             if isinstance(x, dict):
-                out.append(" - ".join(_s(x[k]) for k in x if _s(x[k])))
-            elif _s(x).strip():
-                out.append(_s(x).strip())
+                item = " - ".join(_s(x[k]) for k in x if _s(x[k]))
+            else:
+                item = _s(x)
+            item = _unhedge(item)
+            if item:
+                out.append(item)
         return out
-    return [_s(v)]
+    return [_unhedge(v)] if _unhedge(v) else []
 
 def _people(v):
-    return [f"{p.get('name','')} ({p.get('title','')})" for p in (v or []) if isinstance(p, dict) and p.get("name")]
+    """Named people with a stated title only; a title the model had to guess ('implied from description') drops the person."""
+    return [f"{p.get('name','')} ({p.get('title','')})" for p in (v or [])
+            if isinstance(p, dict) and p.get("name") and not _HEDGE.search(_s(p.get("title"))) and not _HEDGE.search(_s(p.get("name")))]
 
 def _map(profile, j):
     if profile == "partner":
@@ -219,9 +239,9 @@ def _map(profile, j):
             "enr_p_service_lines": _list(j.get("service_lines")), "enr_p_technologies": _list(j.get("technologies")),
             "enr_p_vendor_partnerships": _list(j.get("vendor_partnerships")), "enr_p_microsoft_azure_signals": _list(j.get("microsoft_azure_signals")),
             "enr_p_own_products_ip": _list(j.get("own_products_ip")), "enr_p_industries_served": _list(j.get("industries_served")),
-            "enr_p_named_customers": _list(j.get("named_customers")), "enr_p_delivery_model": _s(j.get("delivery_model")),
+            "enr_p_named_customers": _list(j.get("named_customers")), "enr_p_delivery_model": _unhedge(j.get("delivery_model")),
             "enr_p_geography": _list(j.get("geography")), "enr_p_certifications_awards": _list(j.get("certifications_awards")),
-            "enr_p_scale_signals": _s(j.get("scale_signals")), "enr_p_channel_signals": _list(j.get("channel_signals")),
+            "enr_p_scale_signals": _unhedge(j.get("scale_signals")), "enr_p_channel_signals": _list(j.get("channel_signals")),
             "enr_p_target_customers": _list(j.get("target_customers")), "enr_p_case_studies": _list(j.get("case_studies")),
             "enr_p_capability_depth": _list(j.get("capability_depth")),
             "enr_p_key_people": _people(j.get("key_people")), "enr_p_confidence": _s(j.get("confidence")),
@@ -233,7 +253,7 @@ def _map(profile, j):
             "enr_c_sub_sector": _s(j.get("sub_sector")),
             "enr_c_business_model": _s(j.get("business_model")), "enr_c_products_services": _list(j.get("products_services")),
             "enr_c_customer_channels": _list(j.get("customer_channels")), "enr_c_locations": _list(j.get("locations")),
-            "enr_c_scale_signals": _s(j.get("scale_signals")), "enr_c_technology_signals": _list(j.get("technology_signals")),
+            "enr_c_scale_signals": _unhedge(j.get("scale_signals")), "enr_c_technology_signals": _list(j.get("technology_signals")),
             "enr_c_initiatives_news": _list(j.get("initiatives_news")), "enr_c_functions_signalled": _list(j.get("functions_signalled")),
             "enr_c_key_people": _people(j.get("key_people")), "enr_c_confidence": _s(j.get("confidence")),
         }

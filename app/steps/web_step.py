@@ -34,13 +34,15 @@ def _headers():
         h["Authorization"] = f"Bearer {settings.CRAWL4AI_TOKEN}"
     return h
 
-def _payload(urls, minimal=False):
+def _payload(urls, minimal=False, slow=False):
     if minimal:
         return {"urls": urls}
     browser = json.loads(settings.CRAWL4AI_BROWSER_CONFIG) if settings.CRAWL4AI_BROWSER_CONFIG else \
         {"type": "BrowserConfig", "params": {"headless": True}}
     crawler = json.loads(settings.CRAWL4AI_CRAWLER_CONFIG) if settings.CRAWL4AI_CRAWLER_CONFIG else \
         {"type": "CrawlerRunConfig", "params": {"cache_mode": "bypass", "page_timeout": settings.CRAWL_PAGE_TIMEOUT_MS}}
+    if slow and isinstance(crawler.get("params"), dict):  # script-built sites: give the page time to render and scroll to load lazy content
+        crawler["params"].update({"delay_before_return_html": 4, "scan_full_page": True})
     return {"urls": urls, "browser_config": browser, "crawler_config": crawler}
 
 def _normalize(r: dict) -> dict:
@@ -54,7 +56,7 @@ def _normalize(r: dict) -> dict:
         "links": r.get("links") or {}, "error": r.get("error_message") or "",
     }
 
-async def crawl(urls, client=None) -> list:
+async def crawl(urls, client=None, slow=False) -> list:
     """POST to crawl4ai; returns normalized result dicts in request order (best effort)."""
     global _minimal_mode
     own = client is None
@@ -63,7 +65,7 @@ async def crawl(urls, client=None) -> list:
         async with _semaphore():
             for attempt in (0, 1):
                 try:
-                    r = await client.post(f"{settings.CRAWL4AI_URL}/crawl", json=_payload(urls, _minimal_mode), headers=_headers())
+                    r = await client.post(f"{settings.CRAWL4AI_URL}/crawl", json=_payload(urls, _minimal_mode, slow), headers=_headers())
                 except (httpx.ConnectError, httpx.ConnectTimeout) as e:
                     raise CrawlServerError(f"cannot reach crawl4ai at {settings.CRAWL4AI_URL}: {type(e).__name__}")
                 except httpx.ReadTimeout:
@@ -329,11 +331,14 @@ def extract(domain, pages, careers_url="", packs=None, deep=False):
     out["enr_text_chars"] = len(full_text)
     return out, full_text.lower()[:60000], "\n\n".join(md_parts)[:(max(settings.LLM_MAX_CHARS, 60000) if deep else 14000)]
 
-async def run(domain: str, extra_pages: int = 3, client=None, focus: str = "") -> dict:
+_ERRORISH = re.compile(r"\b[45]\d\d\b|timed out|not found|forbidden|error|access denied|just a moment", re.I)
+THIN_CHARS = 3000  # below this much visible text a site is probably script-built: crawl it once more with a slow render
+
+async def run(domain: str, extra_pages: int = 3, client=None, focus: str = "", slow: bool = False) -> dict:
     home = None
     last_err = ""
     for url in (f"https://{domain}", f"https://www.{domain}", f"http://{domain}"):
-        res = await crawl([url], client)
+        res = await crawl([url], client, slow)
         r = res[0] if res else None
         if r and r["success"] and len(r["html"]) > 20 and (r["status"] or 200) < 400:
             home = r
@@ -355,7 +360,7 @@ async def run(domain: str, extra_pages: int = 3, client=None, focus: str = "") -
         want, more = max(0, min(extra_pages, MAX_EXTRA_PAGES_FOCUS if focus in FOCUS_CATS else MAX_EXTRA_PAGES)), None
     urls, careers_url = pick_pages(final, home["links"], want, focus, more)
     if urls:
-        extra = await crawl(urls, client)
+        extra = await crawl(urls, client, slow)
         for u, r in zip(urls, extra):
             if r["success"] and r["html"]:
                 nm = next((n for n, rx in ALL_CATS if rx.search(urlparse(u).path)), "page")
@@ -365,4 +370,12 @@ async def run(domain: str, extra_pages: int = 3, client=None, focus: str = "") -
     cols["enr_web_status"] = "blocked" if _looks_blocked(home["html"], text) else "ok"
     cols["_text"] = text
     cols["_md"] = md
+    if (not slow and cols["enr_web_status"] == "ok" and cols.get("enr_text_chars", 0) < THIN_CHARS
+            and not _ERRORISH.search(cols.get("enr_site_title", "") or "")):
+        try:
+            again = await run(domain, extra_pages, client, focus, slow=True)
+            if again.get("enr_text_chars", 0) > cols.get("enr_text_chars", 0):
+                return again
+        except CrawlServerError:
+            pass
     return cols

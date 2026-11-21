@@ -57,7 +57,7 @@ os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 m2 = L._map("partner", {"secondary_types": ["Other", "Not a technology partner", "Cloud, hosting & data centre", "Cybersecurity & MSSP"]})
 check("secondary types drop Other / Not a partner", m2["enr_p_secondary_types"] == ["Cloud, hosting & data centre", "Cybersecurity & MSSP"], m2["enr_p_secondary_types"])
 check("capability prompt bans guessing", "never write \"implied\"" in L.PROMPTS["partner"])
-check("version bumped again", L.TAXONOMY_VERSION == "t6")
+check("version bumped again", L.TAXONOMY_VERSION == "t7")
 
 def timeout_handler(request): raise httpx.ReadTimeout("slow site", request=request)
 async def t_crawl():
@@ -99,6 +99,40 @@ check("generic and file-like alt text dropped", "logo" not in t.lower().replace(
 check("no URLs leak", "http" not in t.replace("## home (", "").split(")")[0] or "x.ae/n.png" not in t, t)
 check("hedging banned in rules", "never write \"implied\"" in L.RULES)
 check("secondary types need a real practice", "single mention of a service is not enough" in L.PROMPTS["partner"])
+
+# --- hedge clean-up, vendors vs client logos, slow re-render of thin sites
+check("parenthetical guess removed", L._unhedge("App Source listing (implied)") == "App Source listing", L._unhedge("App Source listing (implied)"))
+check("guess clause removed", L._unhedge("Onsite (offices in Dhaka), remote collaboration implied but not stated.") == "Onsite (offices in Dhaka)", L._unhedge("Onsite (offices in Dhaka), remote collaboration implied but not stated."))
+check("plain facts untouched", L._unhedge("ISO 27001:2013 certified; 24/7 support") == "ISO 27001:2013 certified; 24/7 support")
+check("guessed title drops the person", L._people([{"name": "N S", "title": "Account Manager (implied from description)"}, {"name": "A B", "title": "CEO"}]) == ["A B (CEO)"])
+check("hedged list items dropped or cleaned", L._list(["Likely onsite", "Cloud DR (implied)", "SOC"]) == ["Cloud DR", "SOC"], L._list(["Likely onsite", "Cloud DR (implied)", "SOC"]))
+check("vendor prompt excludes client logos", "never vendor partnerships" in L.PROMPTS["partner"])
+check("slow render adds delay and scroll", W._payload(["https://x.ae"], False, True)["crawler_config"]["params"].get("delay_before_return_html") == 4 and "delay_before_return_html" not in W._payload(["https://x.ae"])["crawler_config"]["params"])
+
+THIN = "<html><head><title>Home</title></head><body><nav>Solutions Capabilities</nav><p>Part of group</p></body></html>"
+RICH = "<html><head><title>Home</title></head><body><h1>We build things</h1>" + "<p>We integrate cloud and security systems for banks and ministries across the UAE.</p>" * 60 + "</body></html>"
+calls = []
+async def fake_crawl(urls, client=None, slow=False):
+    calls.append(slow)
+    return [{"url": u, "final_url": u, "success": True, "status": 200, "html": RICH if slow else THIN, "markdown": "", "links": {}, "error": ""} for u in urls]
+real_crawl = W.crawl
+W.crawl = fake_crawl
+try:
+    r = asyncio.run(W.run("thin.ae", 3, None, "partner"))
+finally:
+    W.crawl = real_crawl
+check("thin site is crawled again with slow render and the richer result wins", True in calls and r["enr_text_chars"] > 3000, (calls, r.get("enr_text_chars")))
+calls.clear()
+ERR = "<html><head><title>522: Connection timed out</title></head><body>error</body></html>"
+async def fake_err(urls, client=None, slow=False):
+    calls.append(slow)
+    return [{"url": u, "final_url": u, "success": True, "status": 200, "html": ERR, "markdown": "", "links": {}, "error": ""} for u in urls]
+W.crawl = fake_err
+try:
+    asyncio.run(W.run("down.ae", 3, None, "partner"))
+finally:
+    W.crawl = real_crawl
+check("error pages are not re-crawled", True not in calls, calls)
 
 print("FAILED" if FAIL else "ALL PASSED", FAIL)
 sys.exit(1 if FAIL else 0)
