@@ -137,5 +137,21 @@ check("error pages are not re-crawled", True not in calls, calls)
 check("person without a title is dropped, not 'Name ()'", L._people([{"name": "N S", "title": ""}, {"name": "A B", "title": "CEO"}]) == ["A B (CEO)"])
 check("question-mark guess removed", L._unhedge("On-site and off-site records management, cloud-hosted?") == "On-site and off-site records management", L._unhedge("On-site and off-site records management, cloud-hosted?"))
 
+# slow retry that comes back unreachable must not crash the row (enr_text_chars is "" there)
+calls.clear()
+async def fake_flaky(urls, client=None, slow=False):
+    calls.append(slow)
+    if slow:
+        return [{"url": u, "final_url": u, "success": False, "status": None, "html": "", "markdown": "", "links": {}, "error": "boom"} for u in urls]
+    return [{"url": u, "final_url": u, "success": True, "status": 200, "html": THIN, "markdown": "", "links": {}, "error": ""} for u in urls]
+W.crawl = fake_flaky
+try:
+    rr = asyncio.run(W.run("flaky.ae", 3, None, "partner"))
+except Exception as e:
+    rr = {"crash": repr(e)}
+finally:
+    W.crawl = real_crawl
+check("failed slow retry keeps the first result", True in calls and rr.get("enr_web_status") == "ok" and "crash" not in rr, rr.get("crash") or calls)
+
 print("FAILED" if FAIL else "ALL PASSED", FAIL)
 sys.exit(1 if FAIL else 0)
