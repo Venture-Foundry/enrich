@@ -28,7 +28,7 @@ _transport = None
 
 # Fixed sector list with a one-line definition each, so the model picks against what a sector INCLUDES, not just its name.
 # Bump TAXONOMY_VERSION whenever this changes: it is part of the cache key, so old answers are not replayed.
-TAXONOMY_VERSION = "t7"  # t3: site text is now de-duplicated and shared across pages before it is sent
+TAXONOMY_VERSION = "t8"  # t3: site text is now de-duplicated and shared across pages before it is sent
 SECTOR_DEFS = {
     "Banking & financial services": "banks, lenders, exchange houses, payments, fintech, crypto/Web3 wallets and exchanges, brokers",
     "Insurance": "insurers, brokers, takaful, claims services",
@@ -194,7 +194,7 @@ Website text:
 def _s(v):
     return v if isinstance(v, str) else ("" if v is None else str(v))
 
-_HEDGE = re.compile(r"\b(implied|implies|likely|appears?|not (?:explicitly )?(?:specified|stated)|unknown|unclear)\b", re.I)
+_HEDGE = re.compile(r"\b(implied|implies|likely|appears?|not (?:explicitly )?(?:specified|stated)|unknown|unclear)\b|\?", re.I)  # a trailing "?" is a guess too
 
 def _unhedge(text):
     """Structured fields hold stated facts only: cut parentheses and clauses that carry a guess ('(implied)', 'remote work implied but not stated').
@@ -228,7 +228,8 @@ def _list(v):
 def _people(v):
     """Named people with a stated title only; a title the model had to guess ('implied from description') drops the person."""
     return [f"{p.get('name','')} ({p.get('title','')})" for p in (v or [])
-            if isinstance(p, dict) and p.get("name") and not _HEDGE.search(_s(p.get("title"))) and not _HEDGE.search(_s(p.get("name")))]
+            if isinstance(p, dict) and p.get("name") and _s(p.get("title")).strip()
+            and not _HEDGE.search(_s(p.get("title"))) and not _HEDGE.search(_s(p.get("name")))]
 
 def _map(profile, j):
     if profile == "partner":
