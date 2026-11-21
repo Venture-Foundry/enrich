@@ -19,4 +19,16 @@ async def go():
         return str(e)
 msg = asyncio.run(go())
 check("null content gives a readable error, not a TypeError", "empty reply" in msg and "reasoning" in msg and "NoneType" not in msg)
+
+def prose(req):
+    return httpx.Response(200, json={"choices": [{"message": {"content": "The text provided only contains a login page, so I cannot profile this company."}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5}})
+llm_step._transport = httpx.MockTransport(prose)
+async def go2():
+    try:
+        await llm_step.run("y.ae", "# Home\nlogin", "customer", {})
+        return ""
+    except RuntimeError as e:
+        return str(e)
+m2 = asyncio.run(go2())
+check("prose reply is an error, not a silent blank row", "no JSON" in m2 and "login page" in m2)
 print(f"{ok} passed, {fail} failed"); sys.exit(1 if fail else 0)

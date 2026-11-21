@@ -249,8 +249,10 @@ async def run(domain: str, markdown: str, profile: str = "summary", usage: dict 
         raise RuntimeError("LLM returned an empty reply: a reasoning model probably used all its reply tokens thinking. "
                            'Turn reasoning off in Extra request JSON (e.g. {"reasoning":{"enabled":false}}) or raise Max reply tokens')
     m = re.search(r"\{.*\}", text, re.S)
+    if not m:  # e.g. the model answered in prose because the site text was thin: show it as a failed row, not a silently blank one
+        raise RuntimeError("LLM reply had no JSON: " + " ".join(text.split())[:100])
     try:
-        j = json.loads(m.group(0)) if m else {}
+        j = json.loads(m.group(0))
     except ValueError:
         raise RuntimeError("LLM returned non-JSON")
     out = _map(profile, j)
