@@ -3,7 +3,7 @@ from collections import deque
 from datetime import datetime, timezone
 from . import cache, settings
 from .util import norm_domain, flat
-from .steps import dns_step, tenant_step, web_step, llm_step, packs as packs_mod
+from .steps import dns_step, tenant_step, web_step, llm_step, isvs as isvs_mod, packs as packs_mod
 from .steps.web_step import CrawlServerError
 
 DOMAIN_CANDIDATES = ["domain", "primary_domain", "website", "website_url", "url", "site", "web"]
@@ -48,6 +48,8 @@ def job_columns(options):
     if "llm" in steps:
         for prof in llm_profiles(options.get("focus", "")):
             cols += llm_step.COLUMNS_BY_PROFILE[prof]
+            if prof == "customer":
+                cols += isvs_mod.columns(list(isvs_mod.select(options.get("isvs", []))))
     return cols
 
 class Job:
@@ -158,9 +160,14 @@ async def process_row(job: Job, i: int):
                 elig = str(row.get(fc, "")).strip().lower() in allowed
             if elig and web_payload.get("_md"):
                 job.llm_used += 1
+                isv_defs = isvs_mod.select(job.options.get("isvs", []))
                 for prof in llm_profiles(focus):
                     key = "llm" if prof == "summary" else f"llm_{prof}"
-                    payload, err = await _cached(job, dom, key, lambda p=prof: llm_step.run(dom, web_payload["_md"], p, job.llm_usage))
+                    use_isv = isv_defs if prof == "customer" else None
+                    if use_isv:
+                        key += "_isv" + isvs_mod.digest(use_isv)  # new ISV definitions -> fresh answers, not a stale cache hit
+                    key += "@" + settings.LLM_MODEL  # answers are cached per model, so comparing models on the same rows really calls each model
+                    payload, err = await _cached(job, dom, key, lambda p=prof, v=use_isv: llm_step.run(dom, web_payload["_md"], p, job.llm_usage, v))
                     if err: errs.append(err)
                     else: res.update(payload)
     status = "ok" if not errs else ("partial" if ok else "error")
@@ -226,6 +233,12 @@ def create_job(name, raw, options) -> Job:
     options["focus"] = options.get("focus") or ""
     if options["focus"] not in FOCUSES:
         raise ValueError("focus must be partner, customer or both")
+    options["isvs"] = [i for i in (options.get("isvs") or []) if isinstance(i, str)]
+    if options["isvs"]:
+        if options["focus"] not in ("customer", "both") or "llm" not in options["steps"]:
+            raise ValueError("ISV fit signals need the LLM step with a customer or both focus")
+        if not isvs_mod.select(options["isvs"]):
+            raise ValueError("None of the selected ISVs has signals defined in config/isvs.json")
     if options["focus"] and "web" not in options["steps"]:
         raise ValueError("A partner/customer focus needs the website step (it controls how deeply each site is crawled)")
     if not options["steps"]:

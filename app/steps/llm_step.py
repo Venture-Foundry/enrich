@@ -8,6 +8,7 @@ Profiles:
 import json, re
 import httpx
 from .. import settings
+from . import isvs as isvs_mod
 
 SUMMARY_COLUMNS = ["enr_llm_one_liner", "enr_llm_offerings", "enr_llm_sector", "enr_llm_customer_type", "enr_llm_hq_emirate", "enr_llm_key_people", "enr_llm_confidence"]
 PARTNER_COLUMNS = [
@@ -102,7 +103,7 @@ technology_signals (list: named systems, platforms, vendors, certifications or d
 initiatives_news (list: expansions, launches, projects, partnerships, awards or hiring themes stated),
 functions_signalled (list: departments or roles evidenced as existing, e.g. IT, digital, customer experience, operations, procurement),
 key_people (list of up to 5 {name,title} only if explicitly named with a title),
-confidence ("high", "medium" or "low").
+confidence ("high", "medium" or "low").%(isv_keys)s
 Company domain: %(domain)s
 Website text:
 %(text)s""",
@@ -158,12 +159,13 @@ def _map(profile, j):
     }
 
 async def _call(prompt: str, usage: dict, profile: str) -> str:
+    extra = settings.LLM_EXTRA_BODY
     max_tokens = settings.LLM_MAX_TOKENS if profile != "summary" else 800
     async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT_S, transport=_transport) as c:
         try:
             if settings.LLM_PROVIDER == "anthropic":
                 headers = {"x-api-key": settings.LLM_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"}
-                body = {"model": settings.LLM_MODEL, "max_tokens": max_tokens, "temperature": 0, "messages": [{"role": "user", "content": prompt}]}
+                body = {"model": settings.LLM_MODEL, "max_tokens": max_tokens, "temperature": 0, "messages": [{"role": "user", "content": prompt}], **extra}
                 r = await c.post(f"{settings.LLM_BASE_URL}/v1/messages", json=body, headers=headers)
                 r.raise_for_status()
                 j = r.json()
@@ -172,7 +174,7 @@ async def _call(prompt: str, usage: dict, profile: str) -> str:
                 usage["out"] = usage.get("out", 0) + int(u.get("output_tokens") or 0)
                 return "".join(b.get("text", "") for b in j.get("content", []) if b.get("type") == "text")
             body = {"model": settings.LLM_MODEL, "temperature": 0, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}],
-                    "response_format": {"type": "json_object"}}
+                    "response_format": {"type": "json_object"}, **extra}
             headers = {"Authorization": f"Bearer {settings.LLM_API_KEY}"} if settings.LLM_API_KEY else {}
             r = await c.post(f"{settings.LLM_BASE_URL}/chat/completions", json=body, headers=headers)
             if r.status_code == 400:  # some servers reject response_format
@@ -187,7 +189,7 @@ async def _call(prompt: str, usage: dict, profile: str) -> str:
         except (httpx.HTTPError, KeyError, ValueError, TypeError) as e:
             raise RuntimeError(f"LLM call failed: {type(e).__name__}")
 
-async def run(domain: str, markdown: str, profile: str = "summary", usage: dict = None) -> dict:
+async def run(domain: str, markdown: str, profile: str = "summary", usage: dict = None, isvs: dict = None) -> dict:
     if not settings.LLM_ENABLED:
         raise RuntimeError("LLM not configured")
     if profile not in PROMPTS:
@@ -195,11 +197,16 @@ async def run(domain: str, markdown: str, profile: str = "summary", usage: dict 
     if not markdown:
         raise RuntimeError("no website text to summarise (run the website step first)")
     limit = 9000 if profile == "summary" else settings.LLM_MAX_CHARS
-    prompt = PROMPTS[profile] % {"rules": RULES, "domain": domain, "text": markdown[:limit], "taxonomy": "; ".join(TAXONOMY)}
+    isvs = isvs if profile == "customer" else None
+    prompt = PROMPTS[profile] % {"rules": RULES, "domain": domain, "text": markdown[:limit], "taxonomy": "; ".join(TAXONOMY),
+                                 "isv_keys": isvs_mod.prompt_block(isvs) if isvs else ""}
     text = await _call(prompt, usage if usage is not None else {}, profile)
     m = re.search(r"\{.*\}", text, re.S)
     try:
         j = json.loads(m.group(0)) if m else {}
     except ValueError:
         raise RuntimeError("LLM returned non-JSON")
-    return _map(profile, j)
+    out = _map(profile, j)
+    if isvs:
+        out.update(isvs_mod.map_result(isvs, j.get("isv_signals")))
+    return out

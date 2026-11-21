@@ -41,6 +41,18 @@ Pick **Profile focus** in step 2 (or `"focus": "partner" | "customer" | "both"` 
 The model is told to use only the crawled text and to leave a field blank rather than guess. Run a 25-row test first, read the output, then run the full list.
 Token usage per job (in/out) is shown in the progress panel and saved with the job, so you can see the real cost per company.
 
+### ISV fit signals (customer focus)
+Define each ISV in `config/isvs.json`: what it does, its ideal customer, yes/no **signals** (each with a weight; negative = already served / poor fit) and named competitors.
+Tick the ISVs in step 2 (shown when the LLM step is on with a customer or both focus). In the same LLM call the model answers each signal from the website text only,
+quoting short evidence and listing any named competitor it finds; the portal then scores it by rule. Per ISV you get `enr_isv_<id>_score` (0-100), `_hits` (signals found, with evidence),
+`_incumbents` (competitor tools named on the site) and `_notes`. "Not mentioned" is scored as not found, never as a guess. Entries with no signals are ignored.
+CentrePal and PulpoAR are drafts; the other ISVs are empty stubs to fill in. Changing a definition automatically refreshes cached answers for that ISV set.
+
+### OpenRouter and other options
+`LLM_EXTRA_BODY` merges JSON into every request, e.g. for OpenRouter `{"provider":{"data_collection":"deny"},"reasoning":{"enabled":false}}`
+(keeps prompts away from providers that retain data, and stops reasoning models spending output tokens on thinking).
+To compare models on the same rows: run a 25-row job per model (change `LLM_MODEL`, restart). The crawl is reused from cache, and LLM answers are cached per model, so each model is really called and the comparison is fair.
+
 LLM providers: `LLM_PROVIDER=openai` (default, any OpenAI-compatible endpoint) or `LLM_PROVIDER=anthropic` (native Claude Messages API; set `LLM_API_KEY` and `LLM_MODEL`, leave `LLM_BASE_URL` blank).
 
 ## Do you need an LLM?

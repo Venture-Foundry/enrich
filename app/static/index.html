@@ -74,6 +74,7 @@
       <label>Rows in parallel<input type="number" id="rowc" min="1" max="50"></label>
       <label class="opt" style="align-self:end"><input type="checkbox" id="force"><span>Ignore cache (re-fetch everything)</span></label>
     </div>
+    <div id="isvBox" class="row hide" style="margin-top:12px"><b>ISV fit signals (customer focus):</b></div>
     <div id="llmOpts" class="grid hide" style="margin-top:12px">
       <label>LLM: max rows to summarise<input type="number" id="llmMax" value="25" min="0"></label>
       <label>LLM: only rows where column<select id="llmCol"><option value="">(any row)</option></select></label>
@@ -109,6 +110,7 @@ async function loadCfg() {
   $('llmpill').className = 'pill' + (cfg.llm_enabled ? ' ok' : '');
   $('s_llm').disabled = !cfg.llm_enabled;
   $('llmsmall').textContent = cfg.llm_enabled ? 'Summarises the crawled text for a limited set of rows (see options below).' : 'Needs LLM_BASE_URL / LLM_MODEL in .env — not configured.';
+  $('isvBox').innerHTML = '<b>ISV fit signals (customer focus):</b> ' + (Object.keys(cfg.isvs || {}).length ? Object.entries(cfg.isvs).map(([k, v]) => `<label class="opt"><input type="checkbox" class="isvk" value="${esc(k)}">${esc(v)}</label>`).join('') : '<span class="muted">none defined yet - edit config/isvs.json</span>');
   $('packBox').innerHTML = Object.entries(cfg.packs).map(([k, v]) => `<label class="opt"><input type="checkbox" class="pk" value="${esc(k)}" checked>${esc(v)}</label>`).join('');
   const total = Object.values(cfg.cache).reduce((a, b) => a + b, 0);
   $('cachecount').textContent = total ? `${total} cached lookups` : '';
@@ -126,6 +128,7 @@ async function ping(crawl) {
 function syncOpts() {
   $('llmOpts').classList.toggle('hide', !$('s_llm').checked);
   $('packBox').classList.toggle('hide', !$('s_packs').checked);
+  $('isvBox').classList.toggle('hide', !($('s_llm').checked && ['customer', 'both'].includes($('focus').value)));
 }
 ['s_llm', 's_packs'].forEach(i => $(i).addEventListener('change', syncOpts));
 $('focus').addEventListener('change', () => { $('extra').value = $('focus').value ? 7 : 3; if ($('focus').value && !$('s_web').checked) $('s_web').checked = true; if ($('focus').value && !$('s_llm').disabled) $('s_llm').checked = true; syncOpts(); });
@@ -158,7 +161,8 @@ $('start').onclick = async () => {
   if (!steps.length) { $('msg').textContent = 'Select at least one step.'; return; }
   const opts = { steps, domain_column: $('domCol').value, max_rows: +$('maxRows').value || 0, extra_pages: +$('extra').value, row_concurrency: +$('rowc').value,
     force: $('force').checked, packs: [...document.querySelectorAll('.pk:checked')].map(x => x.value),
-    llm_max_rows: +$('llmMax').value || 0, llm_filter_column: $('llmCol').value, llm_filter_values: $('llmVals').value, focus: $('focus').value };
+    llm_max_rows: +$('llmMax').value || 0, llm_filter_column: $('llmCol').value, llm_filter_values: $('llmVals').value, focus: $('focus').value,
+    isvs: ($('s_llm').checked && ['customer', 'both'].includes($('focus').value)) ? [...document.querySelectorAll('.isvk:checked')].map(x => x.value) : [] };
   const fd = new FormData(); fd.append('file', file); fd.append('options', JSON.stringify(opts));
   const r = await fetch('/api/jobs', { method: 'POST', body: fd });
   const j = await r.json();

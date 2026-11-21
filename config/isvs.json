@@ -1,0 +1,33 @@
+{
+  "_about": "ISV definitions for the LLM 'ISV fit' extraction (customer focus). For each ISV the model answers the yes/no signals below from the crawled website text only and quotes evidence; the portal then scores them with these weights (negative weight = already served / poor fit). Entries without signals are ignored. CentrePal and PulpoAR are DRAFTS built from config/packs.json; the others are stubs - fill in what_it_does, ideal_customer, signals and competitors, then restart the container.",
+  "centrepal": {
+    "label": "CentrePal (Teams-native contact centre)",
+    "what_it_does": "Contact centre software that runs natively inside Microsoft Teams.",
+    "ideal_customer": "Organisations that run a customer-facing contact centre or helpline and already use Microsoft 365 / Teams.",
+    "signals": [
+      {"id": "runs_contact_centre", "weight": 4, "question": "Does the text show the organisation runs its own call centre, contact centre, helpline or customer-care line (more than just a phone number)?"},
+      {"id": "high_volume_support", "weight": 2, "question": "Does it describe 24/7, multi-channel or high-volume customer support, a hotline or toll-free number?"},
+      {"id": "microsoft_stack", "weight": 2, "question": "Does the text mention Microsoft Teams, Microsoft 365 or Dynamics 365?"},
+      {"id": "digital_channels", "weight": 1, "question": "Does it offer WhatsApp, web chat or a customer app for service?"}
+    ],
+    "competitors": ["Genesys", "Five9", "NICE CXone", "Avaya", "Cisco Webex Contact Center", "Twilio Flex", "RingCentral", "8x8", "Zendesk"]
+  },
+  "pulpoar": {
+    "label": "PulpoAR (AR virtual try-on)",
+    "what_it_does": "Augmented-reality virtual try-on for online and in-store shopping.",
+    "ideal_customer": "Retailers and brands selling eyewear, jewellery, watches, cosmetics or fragrance, with an online store.",
+    "signals": [
+      {"id": "sells_tryon_categories", "weight": 4, "question": "Does the organisation sell eyewear, sunglasses, jewellery, watches, makeup/cosmetics or fragrance (own brand or retail)?"},
+      {"id": "online_store", "weight": 3, "question": "Does it run an online store (add to cart, online ordering, e-commerce)?"},
+      {"id": "multiple_retail_locations", "weight": 1, "question": "Does it operate several stores or outlets?"},
+      {"id": "already_has_tryon", "weight": -3, "question": "Does the site already offer AR or virtual try-on?"}
+    ],
+    "competitors": ["Perfect Corp", "Banuba", "Snap AR", "Zakeke", "Vyking"]
+  },
+  "skymod": {"label": "SkyMod", "what_it_does": "", "ideal_customer": "", "signals": [], "competitors": []},
+  "upvio": {"label": "Upvio (Vitals AI)", "what_it_does": "", "ideal_customer": "", "signals": [], "competitors": []},
+  "enlighty": {"label": "Enlighty (Politus Analytics)", "what_it_does": "", "ideal_customer": "", "signals": [], "competitors": []},
+  "greenshift": {"label": "GreenShift.app", "what_it_does": "", "ideal_customer": "", "signals": [], "competitors": []},
+  "skyxops": {"label": "SkyXOps", "what_it_does": "", "ideal_customer": "", "signals": [], "competitors": []},
+  "cubic": {"label": "Cubic Systems", "what_it_does": "", "ideal_customer": "", "signals": [], "competitors": []}
+}

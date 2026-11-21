@@ -6,7 +6,7 @@ os.environ["DATA_DIR"] = tempfile.mkdtemp()
 os.environ["LLM_BASE_URL"] = "http://llm.test/v1"; os.environ["LLM_MODEL"] = "mock-model"
 import httpx
 from app import jobs, settings
-from app.steps import llm_step, web_step
+from app.steps import isvs as isvs_mod, llm_step, web_step
 
 OK = FAIL = 0
 def check(name, cond, extra=""):
@@ -39,12 +39,20 @@ PARTNER_JSON = {"one_liner": "Integrates and manages IT for banks", "primary_foc
 CUSTOMER_JSON = {"one_liner": "Sells fashion in 40 stores", "summary": "Retail group", "sector": "retail & e-commerce", "secondary_sectors": ["Real estate"], "sector_evidence": "40 stores, online shop", "sub_sector": "Fashion", "business_model": "B2C retail", "products_services": ["Apparel"],
     "customer_channels": ["WhatsApp", "Call centre"], "locations": ["Dubai", "40 stores"], "scale_signals": "40 stores", "technology_signals": ["Shopify"],
     "initiatives_news": ["New flagship"], "functions_signalled": ["IT"], "key_people": [], "confidence": "medium"}
+ISV_JSON = {**CUSTOMER_JSON, "isv_signals": {
+    "centrepal": {"runs_contact_centre": {"found": True, "evidence": "24/7 helpline"}, "high_volume_support": {"found": True, "evidence": ""}, "microsoft_stack": {"found": False},
+                  "competitors_mentioned": ["Genesys", "NotInList"], "notes": "Runs a helpline"},
+    "pulpoar": {"sells_tryon_categories": {"found": True, "evidence": "sells sunglasses"}, "already_has_tryon": {"found": True, "evidence": "AR try-on"}}}}
 seen = []
 def openai_handler(request):
     body = json.loads(request.content); prompt = body["messages"][0]["content"]; seen.append(body)
-    j = PARTNER_JSON if "delivery / channel partner" in prompt else CUSTOMER_JSON
+    j = PARTNER_JSON if "delivery / channel partner" in prompt else (ISV_JSON if "isv_signals" in prompt else CUSTOMER_JSON)
     return httpx.Response(200, json={"choices": [{"message": {"content": "```json\n" + json.dumps(j) + "\n```"}}], "usage": {"prompt_tokens": 7000, "completion_tokens": 900}})
 llm_step._transport = httpx.MockTransport(openai_handler)
+
+async def _partner_prompt(sel):
+    await llm_step.run("x.ae", "stuff", "partner", {}, sel)
+    return seen[-1]["messages"][0]["content"]
 
 async def main():
     usage = {}
@@ -63,6 +71,22 @@ async def main():
     check("one-liner + sector evidence captured", rc["enr_c_one_liner"] and rc["enr_c_sector_evidence"])
     check("sector list is in the customer prompt", "Logistics, shipping & freight" in seen[-1]["messages"][0]["content"])
     check("usage accumulates", usage == {"in": 14000, "out": 1800}, usage)
+    # --- ISV fit signals + OpenRouter pass-through
+    sel = isvs_mod.select(["centrepal", "pulpoar", "skymod"])
+    check("only ISVs with signals are selectable (stubs ignored)", set(sel) == {"centrepal", "pulpoar"}, set(sel))
+    ri = await llm_step.run("x.ae", "# Home\nstuff", "customer", usage, sel)
+    check("ISV block + signal questions in prompt", "runs_contact_centre" in seen[-1]["messages"][0]["content"] and "Genesys" in seen[-1]["messages"][0]["content"])
+    check("ISV columns all present", all(c in ri for c in isvs_mod.columns(["centrepal", "pulpoar"])), set(isvs_mod.columns(["centrepal", "pulpoar"])) - set(ri))
+    check("CentrePal score = weighted found signals (4+2 of 9)", ri["enr_isv_centrepal_score"] == 67, ri["enr_isv_centrepal_score"])
+    check("evidence kept with hits", ri["enr_isv_centrepal_hits"][0].startswith("runs_contact_centre(+4): 24/7 helpline"), ri["enr_isv_centrepal_hits"])
+    check("only listed competitors kept", ri["enr_isv_centrepal_incumbents"] == ["Genesys"], ri["enr_isv_centrepal_incumbents"])
+    check("negative weight reduces PulpoAR score", ri["enr_isv_pulpoar_score"] in (12, 13) and any("already_has_tryon(-3)" in h for h in ri["enr_isv_pulpoar_hits"]), ri["enr_isv_pulpoar_score"])
+    check("customer profile columns still there with ISVs", set(llm_step.CUSTOMER_COLUMNS) <= set(ri))
+    check("ISVs ignored for partner profile", "isv_signals" not in (await _partner_prompt(sel)))
+    settings.LLM_EXTRA_BODY = {"provider": {"data_collection": "deny"}, "reasoning": {"enabled": False}}
+    await llm_step.run("x.ae", "x", "customer", usage)
+    check("LLM_EXTRA_BODY merged into request", seen[-1].get("provider") == {"data_collection": "deny"} and seen[-1].get("reasoning") == {"enabled": False}, list(seen[-1]))
+    settings.LLM_EXTRA_BODY = {}
     try:
         await llm_step.run("x.ae", "x", "bogus"); check("unknown profile rejected", False)
     except RuntimeError:
@@ -88,8 +112,13 @@ check("partner focus -> partner columns", jobs.job_columns({"steps": ["web", "ll
 both = jobs.job_columns({"steps": ["web", "llm"], "focus": "both"})
 check("both focus -> partner + customer columns", all(c in both for c in llm_step.PARTNER_COLUMNS + llm_step.CUSTOMER_COLUMNS))
 check("no focus -> original summary columns", jobs.job_columns({"steps": ["web", "llm"]})[-len(llm_step.SUMMARY_COLUMNS):] == llm_step.SUMMARY_COLUMNS)
+check("LLM cache is keyed by model", "settings.LLM_MODEL" in open(os.path.join(os.path.dirname(__file__), "..", "app", "jobs.py")).read())
+check("ISV columns added for customer focus", all(c in jobs.job_columns({"steps": ["web", "llm"], "focus": "customer", "isvs": ["centrepal"]}) for c in isvs_mod.columns(["centrepal"])))
+check("ISV columns not added without customer focus", not any(c.startswith("enr_isv_") for c in jobs.job_columns({"steps": ["web", "llm"], "focus": "partner", "isvs": ["centrepal"]})))
 csv = b"domain\nx.ae\n"
-for opts, label in (({"steps": ["dns"], "focus": "partner"}, "focus without website step rejected"), ({"steps": ["web"], "focus": "nonsense"}, "unknown focus rejected")):
+for opts, label in (({"steps": ["dns"], "focus": "partner"}, "focus without website step rejected"), ({"steps": ["web"], "focus": "nonsense"}, "unknown focus rejected"),
+                    ({"steps": ["web", "llm"], "focus": "partner", "isvs": ["centrepal"]}, "ISVs without customer focus rejected"),
+                    ({"steps": ["web", "llm"], "focus": "customer", "isvs": ["skymod"]}, "ISV stub with no signals rejected")):
     try:
         jobs.create_job("t.csv", csv, opts); check(label, False)
     except ValueError:

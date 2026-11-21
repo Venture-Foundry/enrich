@@ -3,7 +3,7 @@ import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from . import cache, jobs, settings
-from .steps import packs as packs_mod, web_step
+from .steps import isvs as isvs_mod, packs as packs_mod, web_step
 
 app = FastAPI(title="Enrichment Portal")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -36,7 +36,7 @@ async def index():
 async def config():
     p = packs_mod.load()
     return {"crawl4ai_url": settings.CRAWL4AI_URL, "llm_enabled": settings.LLM_ENABLED, "llm_model": settings.LLM_MODEL if settings.LLM_ENABLED else "",
-            "packs": {k: v.get("label", k) for k, v in p.items()}, "cache": cache.stats(), "cache_ttl_days": settings.CACHE_TTL_DAYS,
+            "packs": {k: v.get("label", k) for k, v in p.items()}, "isvs": {k: v.get("label", k) for k, v in isvs_mod.load().items()}, "cache": cache.stats(), "cache_ttl_days": settings.CACHE_TTL_DAYS,
             "defaults": {"row_concurrency": settings.ROW_CONCURRENCY, "crawl_concurrency": settings.CRAWL_CONCURRENCY}}
 
 @app.get("/api/health")

@@ -1,4 +1,4 @@
-import os
+import json, os
 
 def _int(name, default):
     try:
@@ -31,3 +31,14 @@ LLM_ENABLED = bool(LLM_BASE_URL and LLM_MODEL)
 LLM_MAX_CHARS = _int("LLM_MAX_CHARS", 30000)
 LLM_MAX_TOKENS = _int("LLM_MAX_TOKENS", 3000)
 LLM_TIMEOUT_S = _int("LLM_TIMEOUT_S", 180)
+# Extra JSON merged into every LLM request body, e.g. for OpenRouter: {"provider": {"data_collection": "deny", "only": ["..."]}, "reasoning": {"enabled": false}}
+def _json_obj(name):
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return {}
+    try:
+        v = json.loads(raw)
+        return v if isinstance(v, dict) else {}
+    except ValueError:
+        return {}
+LLM_EXTRA_BODY = _json_obj("LLM_EXTRA_BODY")
